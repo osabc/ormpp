@@ -1198,6 +1198,11 @@ ormpp 自动将 C++ 类型映射为对应数据库的 SQL 类型：
 | `std::string_view` | TEXT | text | TEXT |
 | `std::array<char, N>` | VARCHAR(N) | varchar(N) | VARCHAR(N) |
 | `blob` (std::vector<char>) | BLOB | bytea | BLOB |
+| `ormpp::date` | DATE | date | TEXT |
+| `ormpp::time` | TIME | time | TEXT |
+| `ormpp::datetime` | DATETIME | timestamp | TEXT |
+| `ormpp::timestamp` | TIMESTAMP | timestamp | TEXT |
+| `ormpp::decimal<P, S>` | DECIMAL(P,S) | numeric(P,S) | TEXT |
 | `enum` / `enum class` | INTEGER | integer | INTEGER |
 | `std::optional<T>` | 同 T 类型 | 同 T 类型 | 同 T 类型 |
 

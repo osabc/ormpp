@@ -190,6 +190,11 @@ class mysql {
       param.buffer = (void *)(value.data());
       param.buffer_length = (unsigned long)value.size();
     }
+    else if constexpr (is_db_text_type_v<U>) {
+      param.buffer_type = MYSQL_TYPE_STRING;
+      param.buffer = (void *)(value.data());
+      param.buffer_length = (unsigned long)value.size();
+    }
     else if constexpr (iguana::array_v<U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value.data());
@@ -261,6 +266,21 @@ class mysql {
             field->type == MYSQL_TYPE_LONG_BLOB) {
           buffer_type = field->type;
         }
+        buffer_size = field->length + 1;
+      }
+
+      param_bind.buffer_type = buffer_type;
+      std::vector<char> tmp(buffer_size, 0);
+      mp.emplace(i, std::move(tmp));
+      param_bind.buffer = &(mp.rbegin()->second[0]);
+      param_bind.buffer_length = buffer_size;
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      unsigned long buffer_size = 256;
+      enum_field_types buffer_type = MYSQL_TYPE_STRING;
+
+      MYSQL_FIELD *field = mysql_fetch_field_direct(meta_, i);
+      if (field) {
         buffer_size = field->length + 1;
       }
 
@@ -345,6 +365,10 @@ class mysql {
       auto &vec = mp[i];
       sv_ = std::string(&vec[0], strlen(vec.data()));
       value = sv_;
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      auto &vec = mp[i];
+      value.value = std::string(&vec[0], strlen(vec.data()));
     }
     else if constexpr (iguana::array_v<U>) {
       auto &vec = mp[i];

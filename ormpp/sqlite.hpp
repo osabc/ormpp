@@ -663,6 +663,10 @@ class sqlite {
       return SQLITE_OK ==
              sqlite3_bind_text(stmt_, i, value.data(), len, nullptr);
     }
+    else if constexpr (is_db_text_type_v<U>) {
+      return SQLITE_OK ==
+             sqlite3_bind_text(stmt_, i, value.data(), value.size(), nullptr);
+    }
     else if constexpr (iguana::c_array_v<U> ||
                        std::is_same_v<char,
                                       std::remove_pointer_t<std::decay_t<U>>>) {
@@ -726,6 +730,10 @@ class sqlite {
       sv_.assign((const char *)sqlite3_column_text(stmt_, i),
                  (size_t)sqlite3_column_bytes(stmt_, i));
       value = sv_;
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      value.value.assign((const char *)sqlite3_column_text(stmt_, i),
+                         (size_t)sqlite3_column_bytes(stmt_, i));
     }
     else if constexpr (iguana::array_v<U>) {
       memcpy(value.data(), sqlite3_column_text(stmt_, i), sizeof(U));

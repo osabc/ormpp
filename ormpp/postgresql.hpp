@@ -769,6 +769,12 @@ class postgresql {
                 std::back_inserter(temp));
       param_values.push_back(std::move(temp));
     }
+    else if constexpr (is_db_text_type_v<U>) {
+      std::vector<char> temp = {};
+      std::copy(value.data(), value.data() + value.size() + 1,
+                std::back_inserter(temp));
+      param_values.push_back(std::move(temp));
+    }
     else if constexpr (iguana::c_array_v<U>) {
       std::vector<char> temp = {};
       std::copy(value, value + sizeof(U), std::back_inserter(temp));
@@ -824,6 +830,9 @@ class postgresql {
     else if constexpr (std::is_same_v<std::string_view, U>) {
       sv_ = PQgetvalue(res_, row, i);
       value = sv_;
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      value.value = PQgetvalue(res_, row, i);
     }
     else if constexpr (iguana::array_v<U>) {
       auto p = PQgetvalue(res_, row, i);

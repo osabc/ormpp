@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -89,6 +90,126 @@ struct ormpp_partition_log {
   int bucket;
   std::string payload;
 };
+
+struct db_field_type_entity {
+  int id;
+  ormpp::date birthday;
+  ormpp::time start_time;
+  ormpp::datetime created_at;
+  ormpp::timestamp updated_at;
+  ormpp::decimal<10, 2> amount;
+  std::optional<ormpp::datetime> deleted_at;
+  std::optional<ormpp::decimal<12, 4>> ratio;
+};
+REGISTER_AUTO_KEY(db_field_type_entity, id)
+
+inline db_field_type_entity make_db_field_type_entity(
+    bool include_optional_values = false) {
+  db_field_type_entity item{};
+  item.birthday = "2026-08-23";
+  item.start_time = "16:30:45";
+  item.created_at = "2026-08-23 16:30:45";
+  item.updated_at = "2026-08-23 16:31:00";
+  item.amount = "12345678.90";
+  if (include_optional_values) {
+    item.deleted_at = ormpp::datetime{"2026-08-24 00:00:00"};
+    item.ratio = ormpp::decimal<12, 4>{"12.3456"};
+  }
+  else {
+    item.deleted_at = std::nullopt;
+    item.ratio = ormpp::decimal<12, 4>{"12.3456"};
+  }
+  return item;
+}
+
+inline void check_db_field_type_entity(const db_field_type_entity &actual,
+                                       const db_field_type_entity &expected) {
+  CHECK(actual.birthday.value == expected.birthday.value);
+  CHECK(actual.start_time.value == expected.start_time.value);
+  CHECK(actual.created_at.value == expected.created_at.value);
+  CHECK(actual.updated_at.value == expected.updated_at.value);
+  CHECK(actual.amount.value == expected.amount.value);
+  CHECK(actual.deleted_at.has_value() == expected.deleted_at.has_value());
+  if (expected.deleted_at.has_value()) {
+    CHECK(actual.deleted_at->value == expected.deleted_at->value);
+  }
+  REQUIRE(actual.ratio.has_value());
+  REQUIRE(expected.ratio.has_value());
+  CHECK(actual.ratio->value == expected.ratio->value);
+}
+
+TEST_CASE("database field type mappings") {
+  auto mysql_types = get_type_names<db_field_type_entity>(DBType::mysql);
+  CHECK(mysql_types[1] == "DATE");
+  CHECK(mysql_types[2] == "TIME");
+  CHECK(mysql_types[3] == "DATETIME");
+  CHECK(mysql_types[4] == "TIMESTAMP");
+  CHECK(mysql_types[5] == "DECIMAL(10,2)");
+  CHECK(mysql_types[6] == "DATETIME");
+  CHECK(mysql_types[7] == "DECIMAL(12,4)");
+
+  auto pg_types = get_type_names<db_field_type_entity>(DBType::postgresql);
+  CHECK(pg_types[1] == "date");
+  CHECK(pg_types[2] == "time");
+  CHECK(pg_types[3] == "timestamp");
+  CHECK(pg_types[4] == "timestamp");
+  CHECK(pg_types[5] == "numeric(10,2)");
+  CHECK(pg_types[6] == "timestamp");
+  CHECK(pg_types[7] == "numeric(12,4)");
+
+  auto sqlite_types = get_type_names<db_field_type_entity>(DBType::sqlite);
+  for (std::size_t i = 1; i < sqlite_types.size(); ++i) {
+    CHECK(sqlite_types[i] == "TEXT");
+  }
+}
+
+TEST_CASE("sqlite database field types round trip as text values") {
+  dbng<sqlite> sqlite;
+  REQUIRE(sqlite.connect(":memory:"));
+  REQUIRE(sqlite.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
+
+  auto item = make_db_field_type_entity();
+  CHECK(sqlite.insert(item) == 1);
+
+  auto rows = sqlite.query_s<db_field_type_entity>();
+  REQUIRE(rows.size() == 1);
+  check_db_field_type_entity(rows.front(), item);
+}
+
+TEST_CASE("mysql database field types round trip as text values") {
+#ifdef ORMPP_ENABLE_MYSQL
+  dbng<mysql> mysql;
+  if (mysql.connect(ip, username, password, db)) {
+    mysql.execute("drop table if exists db_field_type_entity");
+    REQUIRE(mysql.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
+
+    auto item = make_db_field_type_entity(true);
+    CHECK(mysql.insert(item) == 1);
+
+    auto rows = mysql.query_s<db_field_type_entity>();
+    REQUIRE(rows.size() == 1);
+    check_db_field_type_entity(rows.front(), item);
+  }
+#endif
+}
+
+TEST_CASE("postgresql database field types round trip as text values") {
+#ifdef ORMPP_ENABLE_PG
+  dbng<postgresql> postgres;
+  if (postgres.connect(ip, username, password, db, 5)) {
+    postgres.execute("drop table if exists db_field_type_entity");
+    REQUIRE(
+        postgres.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
+
+    auto item = make_db_field_type_entity(true);
+    CHECK(postgres.insert(item) == 1);
+
+    auto rows = postgres.query_s<db_field_type_entity>();
+    REQUIRE(rows.size() == 1);
+    check_db_field_type_entity(rows.front(), item);
+  }
+#endif
+}
 
 TEST_CASE("test mysql long string") {
 #ifdef ORMPP_ENABLE_MYSQL
