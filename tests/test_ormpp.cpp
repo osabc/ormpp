@@ -261,6 +261,16 @@ TEST_CASE("test mysql long string") {
         mysql.query_s<std::tuple<std::string>>("SELECT '' AS empty_string");
     CHECK(empty_vec.size() == 1);
     CHECK(std::get<0>(empty_vec[0]).empty());
+
+    auto null_vec = mysql.query_s<std::tuple<std::optional<std::string>>>(
+        "SELECT ?", static_cast<const char *>(nullptr));
+    CHECK(null_vec.size() == 1);
+    CHECK(!std::get<0>(null_vec[0]).has_value());
+
+    auto wrapper_vec = mysql.query_s<std::tuple<std::string>>(
+        "SELECT ?", ormpp::date{"2026-08-24"});
+    CHECK(wrapper_vec.size() == 1);
+    CHECK(std::get<0>(wrapper_vec[0]) == "2026-08-24");
   }
 #endif
 }
