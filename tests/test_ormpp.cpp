@@ -256,6 +256,11 @@ TEST_CASE("test mysql long string") {
         "SELECT REPEAT('A', 65537) AS long_string");
     CHECK(vec.size() == 1);
     CHECK(std::get<0>(vec[0]).length() == 65537);
+
+    auto empty_vec =
+        mysql.query_s<std::tuple<std::string>>("SELECT '' AS empty_string");
+    CHECK(empty_vec.size() == 1);
+    CHECK(std::get<0>(empty_vec[0]).empty());
   }
 #endif
 }
