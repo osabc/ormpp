@@ -165,6 +165,8 @@ class mysql {
       std::remove_pointer_t<decltype(std::declval<MYSQL_BIND>().error)>;
   using mysql_text_param_storage = std::list<std::string>;
   using mysql_blob_param_storage = std::list<blob>;
+  static constexpr unsigned long max_mysql_result_buffer_size =
+      64UL * 1024UL * 1024UL;
 
   static constexpr unsigned long mysql_buffer_length(std::size_t size) {
     if (size > (std::numeric_limits<unsigned long>::max)()) {
@@ -193,8 +195,23 @@ class mysql {
     return static_cast<unsigned int>(index);
   }
 
+  static std::size_t bounded_c_string_length(const char *data,
+                                             std::size_t max_size) {
+    std::size_t len = 0;
+    while (len < max_size && data[len] != '\0') {
+      ++len;
+    }
+
+    return len;
+  }
+
   std::optional<std::vector<char>> fetch_column_data(
       size_t column, enum_field_types buffer_type, unsigned long length) {
+    if (length > max_mysql_result_buffer_size) {
+      set_last_error("mysql result column length exceeds max buffer size");
+      return std::nullopt;
+    }
+
     std::vector<char> buffer(
         static_cast<std::size_t>(mysql_buffer_length_with_null(length)), 0);
     unsigned long fetched_length = 0;
@@ -247,22 +264,55 @@ class mysql {
     return std::string(vec.data(), vec.data() + len);
   }
 
-  void bind_text_param(MYSQL_BIND &param, const char *data, std::size_t size,
-                       mysql_text_param_storage &storage) {
-    storage.emplace_back(data, data + size);
-    auto &stored = storage.back();
+  static void bind_text_param_ref(MYSQL_BIND &param, const char *data,
+                                  std::size_t size) {
     param.buffer_type = MYSQL_TYPE_STRING;
-    param.buffer = (void *)(stored.data());
-    param.buffer_length = mysql_buffer_length(stored.size());
+    param.buffer = const_cast<void *>(static_cast<const void *>(data));
+    param.buffer_length = mysql_buffer_length(size);
   }
 
-  void bind_blob_param(MYSQL_BIND &param, const blob &value,
-                       mysql_blob_param_storage &storage) {
+  static void bind_text_param_copy(MYSQL_BIND &param, const char *data,
+                                   std::size_t size,
+                                   mysql_text_param_storage &storage) {
+    storage.emplace_back(data, data + size);
+    auto &stored = storage.back();
+    bind_text_param_ref(param, stored.data(), stored.size());
+  }
+
+  template <typename T>
+  static void bind_text_param(MYSQL_BIND &param, const char *data,
+                              std::size_t size,
+                              mysql_text_param_storage &storage) {
+    if constexpr (std::is_lvalue_reference_v<T &&>) {
+      bind_text_param_ref(param, data, size);
+    }
+    else {
+      bind_text_param_copy(param, data, size, storage);
+    }
+  }
+
+  static void bind_blob_param_ref(MYSQL_BIND &param, const blob &value) {
+    param.buffer_type = MYSQL_TYPE_BLOB;
+    param.buffer = const_cast<void *>(static_cast<const void *>(value.data()));
+    param.buffer_length = mysql_buffer_length(value.size());
+  }
+
+  static void bind_blob_param_copy(MYSQL_BIND &param, const blob &value,
+                                   mysql_blob_param_storage &storage) {
     storage.push_back(value);
     auto &stored = storage.back();
-    param.buffer_type = MYSQL_TYPE_BLOB;
-    param.buffer = (void *)(stored.data());
-    param.buffer_length = mysql_buffer_length(stored.size());
+    bind_blob_param_ref(param, stored);
+  }
+
+  template <typename T>
+  static void bind_blob_param(MYSQL_BIND &param, const blob &value,
+                              mysql_blob_param_storage &storage) {
+    if constexpr (std::is_lvalue_reference_v<T &&>) {
+      bind_blob_param_ref(param, value);
+    }
+    else {
+      bind_blob_param_copy(param, value, storage);
+    }
   }
 
   template <typename T>
@@ -299,37 +349,49 @@ class mysql {
     }
     else if constexpr (std::is_same_v<std::string, U> ||
                        std::is_same_v<std::string_view, U>) {
-      bind_text_param(param, value.data(), value.size(), text_storage);
+      bind_text_param<T>(param, value.data(), value.size(), text_storage);
     }
     else if constexpr (is_db_text_type_v<U>) {
-      bind_text_param(param, value.data(), value.size(), text_storage);
+      bind_text_param<T>(param, value.data(), value.size(), text_storage);
     }
     else if constexpr (iguana::array_v<U>) {
-      bind_text_param(
-          param, value.data(),
-          (std::min)(std::strlen(value.data()), (size_t)value.size()),
-          text_storage);
+      using value_type = typename U::value_type;
+      if constexpr (std::is_same_v<std::remove_cv_t<value_type>, char>) {
+        bind_text_param<T>(param, value.data(),
+                           bounded_c_string_length(value.data(), value.size()),
+                           text_storage);
+      }
+      else {
+        static_assert(!sizeof(U), "only char arrays are supported as strings");
+      }
     }
     else if constexpr (iguana::c_array_v<U>) {
-      bind_text_param(param, value,
-                      (std::min)(std::strlen(value), (size_t)sizeof(U)),
-                      text_storage);
+      using value_type = std::remove_extent_t<U>;
+      if constexpr (std::is_same_v<std::remove_cv_t<value_type>, char>) {
+        bind_text_param<T>(param, value,
+                           bounded_c_string_length(value, std::extent_v<U>),
+                           text_storage);
+      }
+      else {
+        static_assert(!sizeof(U), "only char arrays are supported as strings");
+      }
     }
-    else if constexpr (std::is_same_v<const char *, U>) {
+    else if constexpr (std::is_same_v<const char *, U> ||
+                       std::is_same_v<char *, U>) {
       if (value == nullptr) {
         param.buffer_type = MYSQL_TYPE_NULL;
       }
       else {
-        bind_text_param(param, value, strlen(value), text_storage);
+        bind_text_param<T>(param, value, strlen(value), text_storage);
       }
     }
     else if constexpr (std::is_same_v<blob, U>) {
-      bind_blob_param(param, value, blob_storage);
+      bind_blob_param<T>(param, value, blob_storage);
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
-      bind_text_param(param, value.GetString(), value.GetLength(),
-                      text_storage);
+      bind_text_param<T>(param, value.GetString(), value.GetLength(),
+                         text_storage);
     }
 #endif
     else {
