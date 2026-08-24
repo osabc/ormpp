@@ -160,7 +160,7 @@ inline constexpr auto type_to_name(identity<timestamp>) noexcept {
   return "TIMESTAMP"sv;
 }
 template <int Precision, int Scale>
-inline auto type_to_name(identity<decimal<Precision, Scale>>) noexcept {
+inline auto type_to_name(identity<decimal<Precision, Scale>>) {
   return "DECIMAL(" + std::to_string(Precision) + "," + std::to_string(Scale) +
          ")";
 }
@@ -308,7 +308,7 @@ inline constexpr auto type_to_name(identity<timestamp>) noexcept {
   return "timestamp"sv;
 }
 template <int Precision, int Scale>
-inline auto type_to_name(identity<decimal<Precision, Scale>>) noexcept {
+inline auto type_to_name(identity<decimal<Precision, Scale>>) {
   return "numeric(" + std::to_string(Precision) + "," + std::to_string(Scale) +
          ")";
 }

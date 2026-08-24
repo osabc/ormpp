@@ -228,7 +228,7 @@ class mysql {
   template <typename T, typename B>
   void set_param_bind(MYSQL_RES *meta_, MYSQL_BIND &param_bind, T &&value,
                       int i, std::map<size_t, std::vector<char>> &mp,
-                      B &is_null) {
+                      B &is_null, unsigned long *length = nullptr) {
     using U = ylt::reflection::remove_cvref_t<T>;
 
     if constexpr (is_optional_v<U>::value) {
@@ -236,7 +236,7 @@ class mysql {
       if (!value.has_value()) {
         value = value_type{};
       }
-      return set_param_bind(meta_, param_bind, *value, i, mp, is_null);
+      return set_param_bind(meta_, param_bind, *value, i, mp, is_null, length);
     }
     else if constexpr (std::is_enum_v<U>) {
       param_bind.buffer_type = MYSQL_TYPE_LONG;
@@ -271,9 +271,10 @@ class mysql {
 
       param_bind.buffer_type = buffer_type;
       std::vector<char> tmp(buffer_size, 0);
-      mp.emplace(i, std::move(tmp));
-      param_bind.buffer = &(mp.rbegin()->second[0]);
+      auto it = mp.emplace(i, std::move(tmp)).first;
+      param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
+      param_bind.length = length;
     }
     else if constexpr (is_db_text_type_v<U>) {
       unsigned long buffer_size = 256;
@@ -286,16 +287,18 @@ class mysql {
 
       param_bind.buffer_type = buffer_type;
       std::vector<char> tmp(buffer_size, 0);
-      mp.emplace(i, std::move(tmp));
-      param_bind.buffer = &(mp.rbegin()->second[0]);
+      auto it = mp.emplace(i, std::move(tmp)).first;
+      param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
+      param_bind.length = length;
     }
     else if constexpr (iguana::array_v<U>) {
       param_bind.buffer_type = MYSQL_TYPE_VAR_STRING;
       std::vector<char> tmp(sizeof(U), 0);
-      mp.emplace(i, std::move(tmp));
-      param_bind.buffer = &(mp.rbegin()->second[0]);
+      auto it = mp.emplace(i, std::move(tmp)).first;
+      param_bind.buffer = it->second.data();
       param_bind.buffer_length = (unsigned long)sizeof(U);
+      param_bind.length = length;
     }
     else if constexpr (std::is_same_v<blob, U>) {
       unsigned long buffer_size = 65536;
@@ -309,9 +312,10 @@ class mysql {
 
       param_bind.buffer_type = buffer_type;
       std::vector<char> tmp(buffer_size, 0);
-      mp.emplace(i, std::move(tmp));
-      param_bind.buffer = &(mp.rbegin()->second[0]);
+      auto it = mp.emplace(i, std::move(tmp)).first;
+      param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
+      param_bind.length = length;
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
@@ -329,9 +333,10 @@ class mysql {
 
       param_bind.buffer_type = buffer_type;
       std::vector<char> tmp(buffer_size, 0);
-      mp.emplace(i, std::move(tmp));
-      param_bind.buffer = &(mp.rbegin()->second[0]);
+      auto it = mp.emplace(i, std::move(tmp)).first;
+      param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
+      param_bind.length = length;
     }
 #endif
     else {
@@ -359,16 +364,19 @@ class mysql {
     }
     else if constexpr (std::is_same_v<std::string, U>) {
       auto &vec = mp[i];
-      value = std::string(&vec[0], strlen(vec.data()));
+      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
+      value.assign(vec.data(), vec.data() + len);
     }
     else if constexpr (std::is_same_v<std::string_view, U>) {
       auto &vec = mp[i];
-      sv_ = std::string(&vec[0], strlen(vec.data()));
+      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
+      sv_.assign(vec.data(), vec.data() + len);
       value = sv_;
     }
     else if constexpr (is_db_text_type_v<U>) {
       auto &vec = mp[i];
-      value.value = std::string(&vec[0], strlen(vec.data()));
+      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
+      value.value.assign(vec.data(), vec.data() + len);
     }
     else if constexpr (iguana::array_v<U>) {
       auto &vec = mp[i];
@@ -469,6 +477,7 @@ class mysql {
     }
 
     std::array<decltype(std::declval<MYSQL_BIND>().is_null), SIZE> nulls = {};
+    std::array<unsigned long, SIZE> lengths = {};
     std::array<MYSQL_BIND, SIZE> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -476,10 +485,10 @@ class mysql {
     size_t index = 0;
     std::vector<T> v;
     ylt::reflection::for_each(
-        t, [&param_binds, &index, &nulls, &mp, this](auto &field, auto /*name*/,
-                                                     auto /*index*/) {
+        t, [&param_binds, &index, &nulls, &lengths, &mp, this](
+               auto &field, auto /*name*/, auto /*index*/) {
           set_param_bind(this->meta_, param_binds[index], field, index, mp,
-                         nulls[index]);
+                         nulls[index], &lengths[index]);
           index++;
         });
 
@@ -567,6 +576,7 @@ class mysql {
     std::array<decltype(std::declval<MYSQL_BIND>().is_null),
                result_size<T>::value>
         nulls = {};
+    std::array<unsigned long, result_size<T>::value> lengths = {};
     std::array<MYSQL_BIND, result_size<T>::value> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -575,20 +585,21 @@ class mysql {
     std::vector<T> v;
     ormpp::for_each(
         tp,
-        [&param_binds, &index, &nulls, &mp, this](auto &item, auto /*index*/) {
+        [&param_binds, &index, &nulls, &lengths, &mp, this](auto &item,
+                                                            auto /*index*/) {
           using U = ylt::reflection::remove_cvref_t<decltype(item)>;
           if constexpr (iguana::ylt_refletable_v<U>) {
             ylt::reflection::for_each(
-                item, [&param_binds, &index, &nulls, &mp, this](
+                item, [&param_binds, &index, &nulls, &lengths, &mp, this](
                           auto &field, auto /*name*/, auto /*index*/) {
                   set_param_bind(this->meta_, param_binds[index], field, index,
-                                 mp, nulls[index]);
+                                 mp, nulls[index], &lengths[index]);
                   index++;
                 });
           }
           else {
             set_param_bind(this->meta_, param_binds[index], item, index, mp,
-                           nulls[index]);
+                           nulls[index], &lengths[index]);
             index++;
           }
         },
@@ -729,6 +740,7 @@ class mysql {
     auto meta_guard = guard_result(meta_);
 
     std::array<decltype(std::declval<MYSQL_BIND>().is_null), SIZE> nulls = {};
+    std::array<unsigned long, SIZE> lengths = {};
     std::array<MYSQL_BIND, SIZE> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -736,10 +748,10 @@ class mysql {
     size_t index = 0;
     std::vector<T> v;
     ylt::reflection::for_each(
-        t, [&param_binds, &index, &nulls, &mp, this](auto &field, auto /*name*/,
-                                                     auto /*index*/) {
+        t, [&param_binds, &index, &nulls, &lengths, &mp, this](
+               auto &field, auto /*name*/, auto /*index*/) {
           set_param_bind(this->meta_, param_binds[index], field, index, mp,
-                         nulls[index]);
+                         nulls[index], &lengths[index]);
           index++;
         });
 
@@ -830,6 +842,7 @@ class mysql {
     std::array<decltype(std::declval<MYSQL_BIND>().is_null),
                result_size<T>::value>
         nulls = {};
+    std::array<unsigned long, result_size<T>::value> lengths = {};
     std::array<MYSQL_BIND, result_size<T>::value> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -838,20 +851,21 @@ class mysql {
     std::vector<T> v;
     ormpp::for_each(
         tp,
-        [&param_binds, &index, &nulls, &mp, this](auto &item, auto /*index*/) {
+        [&param_binds, &index, &nulls, &lengths, &mp, this](auto &item,
+                                                            auto /*index*/) {
           using U = ylt::reflection::remove_cvref_t<decltype(item)>;
           if constexpr (iguana::ylt_refletable_v<U>) {
             ylt::reflection::for_each(
-                item, [&param_binds, &index, &nulls, &mp, this](
+                item, [&param_binds, &index, &nulls, &lengths, &mp, this](
                           auto &field, auto /*name*/, auto /*index*/) {
                   set_param_bind(this->meta_, param_binds[index], field, index,
-                                 mp, nulls[index]);
+                                 mp, nulls[index], &lengths[index]);
                   index++;
                 });
           }
           else {
             set_param_bind(this->meta_, param_binds[index], item, index, mp,
-                           nulls[index]);
+                           nulls[index], &lengths[index]);
             index++;
           }
         },

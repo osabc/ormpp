@@ -732,8 +732,13 @@ class sqlite {
       value = sv_;
     }
     else if constexpr (is_db_text_type_v<U>) {
-      value.value.assign((const char *)sqlite3_column_text(stmt_, i),
-                         (size_t)sqlite3_column_bytes(stmt_, i));
+      auto text = reinterpret_cast<const char *>(sqlite3_column_text(stmt_, i));
+      if (text == nullptr) {
+        value.value.clear();
+      }
+      else {
+        value.value.assign(text, (size_t)sqlite3_column_bytes(stmt_, i));
+      }
     }
     else if constexpr (iguana::array_v<U>) {
       memcpy(value.data(), sqlite3_column_text(stmt_, i), sizeof(U));

@@ -122,6 +122,18 @@ inline db_field_type_entity make_db_field_type_entity(
   return item;
 }
 
+inline db_field_type_entity make_updated_db_field_type_entity(
+    db_field_type_entity item) {
+  item.birthday = "2026-08-24";
+  item.start_time = "17:31:46";
+  item.created_at = "2026-08-24 17:31:46";
+  item.updated_at = "2026-08-24 17:32:00";
+  item.amount = "87654321.09";
+  item.deleted_at = ormpp::datetime{"2026-08-25 00:00:00"};
+  item.ratio = ormpp::decimal<12, 4>{"98.7654"};
+  return item;
+}
+
 inline void check_db_field_type_entity(const db_field_type_entity &actual,
                                        const db_field_type_entity &expected) {
   CHECK(actual.birthday.value == expected.birthday.value);
@@ -136,6 +148,29 @@ inline void check_db_field_type_entity(const db_field_type_entity &actual,
   REQUIRE(actual.ratio.has_value());
   REQUIRE(expected.ratio.has_value());
   CHECK(actual.ratio->value == expected.ratio->value);
+}
+
+template <typename DB>
+inline void check_db_field_type_crud(DB &database,
+                                     std::string_view id_condition) {
+  auto item = make_db_field_type_entity(true);
+  CHECK(database.insert(item) == 1);
+
+  auto rows = database.template query_s<db_field_type_entity>();
+  REQUIRE(rows.size() == 1);
+  check_db_field_type_entity(rows.front(), item);
+
+  auto updated = make_updated_db_field_type_entity(rows.front());
+  CHECK(database.update(updated) == 1);
+
+  auto updated_rows = database.template query_s<db_field_type_entity>(
+      std::string(id_condition), updated.id);
+  REQUIRE(updated_rows.size() == 1);
+  check_db_field_type_entity(updated_rows.front(), updated);
+
+  CHECK(database.template delete_records_s<db_field_type_entity>(
+            std::string(id_condition), updated.id) == 1);
+  CHECK(database.template query_s<db_field_type_entity>().empty());
 }
 
 TEST_CASE("database field type mappings") {
@@ -163,37 +198,27 @@ TEST_CASE("database field type mappings") {
   }
 }
 
-TEST_CASE("sqlite database field types round trip as text values") {
+TEST_CASE("sqlite database field types CRUD as text values") {
   dbng<sqlite> sqlite;
   REQUIRE(sqlite.connect(":memory:"));
   REQUIRE(sqlite.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-  auto item = make_db_field_type_entity();
-  CHECK(sqlite.insert(item) == 1);
-
-  auto rows = sqlite.query_s<db_field_type_entity>();
-  REQUIRE(rows.size() == 1);
-  check_db_field_type_entity(rows.front(), item);
+  check_db_field_type_crud(sqlite, "id=?");
 }
 
-TEST_CASE("mysql database field types round trip as text values") {
+TEST_CASE("mysql database field types CRUD as text values") {
 #ifdef ORMPP_ENABLE_MYSQL
   dbng<mysql> mysql;
   if (mysql.connect(ip, username, password, db)) {
     mysql.execute("drop table if exists db_field_type_entity");
     REQUIRE(mysql.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-    auto item = make_db_field_type_entity(true);
-    CHECK(mysql.insert(item) == 1);
-
-    auto rows = mysql.query_s<db_field_type_entity>();
-    REQUIRE(rows.size() == 1);
-    check_db_field_type_entity(rows.front(), item);
+    check_db_field_type_crud(mysql, "id=?");
   }
 #endif
 }
 
-TEST_CASE("postgresql database field types round trip as text values") {
+TEST_CASE("postgresql database field types CRUD as text values") {
 #ifdef ORMPP_ENABLE_PG
   dbng<postgresql> postgres;
   if (postgres.connect(ip, username, password, db, 5)) {
@@ -201,12 +226,7 @@ TEST_CASE("postgresql database field types round trip as text values") {
     REQUIRE(
         postgres.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-    auto item = make_db_field_type_entity(true);
-    CHECK(postgres.insert(item) == 1);
-
-    auto rows = postgres.query_s<db_field_type_entity>();
-    REQUIRE(rows.size() == 1);
-    check_db_field_type_entity(rows.front(), item);
+    check_db_field_type_crud(postgres, "id=$1");
   }
 #endif
 }

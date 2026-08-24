@@ -771,8 +771,9 @@ class postgresql {
     }
     else if constexpr (is_db_text_type_v<U>) {
       std::vector<char> temp = {};
-      std::copy(value.data(), value.data() + value.size() + 1,
+      std::copy(value.data(), value.data() + value.size(),
                 std::back_inserter(temp));
+      temp.push_back('\0');
       param_values.push_back(std::move(temp));
     }
     else if constexpr (iguana::c_array_v<U>) {

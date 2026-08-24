@@ -1206,6 +1206,10 @@ ormpp 自动将 C++ 类型映射为对应数据库的 SQL 类型：
 | `enum` / `enum class` | INTEGER | integer | INTEGER |
 | `std::optional<T>` | 同 T 类型 | 同 T 类型 | 同 T 类型 |
 
+`ormpp::date`、`ormpp::time`、`ormpp::datetime`、`ormpp::timestamp`
+和 `ormpp::decimal<P, S>` 是轻量文本包装类型，ormpp 负责生成对应字段类型并按文本绑定/读取，
+不做日期格式、时间范围或 decimal 精度校验。
+
 ## 连接池
 
 ormpp 内置了数据库连接池，支持自动创建、回收和健康检查，避免频繁创建/销毁连接带来的性能开销。
