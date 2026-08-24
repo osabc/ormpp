@@ -173,6 +173,21 @@ inline void check_db_field_type_crud(DB &database,
   CHECK(database.template query_s<db_field_type_entity>().empty());
 }
 
+template <typename DB>
+inline void check_db_field_type_optional_null(DB &database,
+                                              std::string_view id_condition) {
+  auto item = make_db_field_type_entity(false);
+  CHECK(database.insert(item) == 1);
+
+  auto rows = database.template query_s<db_field_type_entity>();
+  REQUIRE(rows.size() == 1);
+  check_db_field_type_entity(rows.front(), item);
+
+  CHECK(database.template delete_records_s<db_field_type_entity>(
+            std::string(id_condition), rows.front().id) == 1);
+  CHECK(database.template query_s<db_field_type_entity>().empty());
+}
+
 TEST_CASE("database field type mappings") {
   auto mysql_types = get_type_names<db_field_type_entity>(DBType::mysql);
   CHECK(mysql_types[1] == "DATE");
@@ -204,6 +219,7 @@ TEST_CASE("sqlite database field types CRUD as text values") {
   REQUIRE(sqlite.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
   check_db_field_type_crud(sqlite, "id=?");
+  check_db_field_type_optional_null(sqlite, "id=?");
 }
 
 TEST_CASE("mysql database field types CRUD as text values") {
@@ -214,6 +230,7 @@ TEST_CASE("mysql database field types CRUD as text values") {
     REQUIRE(mysql.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
     check_db_field_type_crud(mysql, "id=?");
+    check_db_field_type_optional_null(mysql, "id=?");
   }
 #endif
 }

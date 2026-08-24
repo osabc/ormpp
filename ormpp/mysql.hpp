@@ -6,9 +6,13 @@
 #define ORM_MYSQL_HPP
 
 #include <climits>
+#include <cstring>
+#include <limits>
 #include <list>
 #include <map>
+#include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "entity.hpp"
@@ -154,6 +158,71 @@ class mysql {
 
   int get_last_affect_rows() { return last_affect_rows_; }
 
+  using mysql_null_type =
+      std::remove_pointer_t<decltype(std::declval<MYSQL_BIND>().is_null)>;
+  using mysql_error_type =
+      std::remove_pointer_t<decltype(std::declval<MYSQL_BIND>().error)>;
+
+  static constexpr unsigned long mysql_buffer_length(std::size_t size) {
+    if (size > (std::numeric_limits<unsigned long>::max)()) {
+      throw std::length_error("mysql buffer length exceeds unsigned long");
+    }
+
+    return static_cast<unsigned long>(size);
+  }
+
+  std::vector<char> fetch_column_data(int column, enum_field_types buffer_type,
+                                      unsigned long length) {
+    if (length == (std::numeric_limits<unsigned long>::max)()) {
+      throw std::length_error(
+          "mysql result column length exceeds supported "
+          "buffer length");
+    }
+
+    std::vector<char> buffer(static_cast<std::size_t>(length) + 1, 0);
+    unsigned long fetched_length = 0;
+    MYSQL_BIND param = {};
+    param.buffer_type = buffer_type;
+    param.buffer = buffer.data();
+    param.buffer_length = mysql_buffer_length(buffer.size());
+    param.length = &fetched_length;
+
+    auto retcode = mysql_stmt_fetch_column(stmt_, &param, column, 0);
+    if (retcode != 0) {
+      set_last_error(mysql_stmt_error(stmt_));
+      return {};
+    }
+
+    buffer.resize(fetched_length);
+    return buffer;
+  }
+
+  std::string fetch_column_text(int column, enum_field_types buffer_type,
+                                unsigned long length) {
+    auto buffer = fetch_column_data(column, buffer_type, length);
+    if (buffer.empty()) {
+      return {};
+    }
+
+    return {buffer.data(), buffer.data() + buffer.size()};
+  }
+
+  std::string get_column_text_value(MYSQL_BIND &param_bind, int i,
+                                    std::map<size_t, std::vector<char>> &mp) {
+    auto len = param_bind.length ? *param_bind.length : 0;
+    if ((param_bind.error && *param_bind.error) ||
+        len > param_bind.buffer_length) {
+      return fetch_column_text(i, param_bind.buffer_type, len);
+    }
+
+    auto &vec = mp[i];
+    if (!param_bind.length) {
+      len = mysql_buffer_length(std::strlen(vec.data()));
+    }
+
+    return {vec.data(), vec.data() + len};
+  }
+
   template <typename T>
   constexpr void set_param_bind(std::vector<MYSQL_BIND> &param_binds,
                                 T &&value) {
@@ -188,35 +257,35 @@ class mysql {
                        std::is_same_v<std::string_view, U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value.data());
-      param.buffer_length = (unsigned long)value.size();
+      param.buffer_length = mysql_buffer_length(value.size());
     }
     else if constexpr (is_db_text_type_v<U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value.data());
-      param.buffer_length = (unsigned long)value.size();
+      param.buffer_length = mysql_buffer_length(value.size());
     }
     else if constexpr (iguana::array_v<U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value.data());
-      param.buffer_length =
-          (std::min)(std::strlen(value.data()), (size_t)value.size());
+      param.buffer_length = mysql_buffer_length(
+          (std::min)(std::strlen(value.data()), (size_t)value.size()));
     }
     else if constexpr (iguana::c_array_v<U> ||
                        std::is_same_v<const char *, U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value);
-      param.buffer_length = (unsigned long)strlen(value);
+      param.buffer_length = mysql_buffer_length(strlen(value));
     }
     else if constexpr (std::is_same_v<blob, U>) {
       param.buffer_type = MYSQL_TYPE_BLOB;
       param.buffer = (void *)(value.data());
-      param.buffer_length = (unsigned long)value.size();
+      param.buffer_length = mysql_buffer_length(value.size());
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
       param.buffer_type = MYSQL_TYPE_STRING;
       param.buffer = (void *)(value.GetString());
-      param.buffer_length = (unsigned long)value.GetLength();
+      param.buffer_length = mysql_buffer_length(value.GetLength());
     }
 #endif
     else {
@@ -225,10 +294,10 @@ class mysql {
     param_binds.push_back(param);
   }
 
-  template <typename T, typename B>
+  template <typename T, typename B, typename E>
   void set_param_bind(MYSQL_RES *meta_, MYSQL_BIND &param_bind, T &&value,
                       int i, std::map<size_t, std::vector<char>> &mp,
-                      B &is_null, unsigned long *length = nullptr) {
+                      B &is_null, unsigned long *length, E *error) {
     using U = ylt::reflection::remove_cvref_t<T>;
 
     if constexpr (is_optional_v<U>::value) {
@@ -236,7 +305,8 @@ class mysql {
       if (!value.has_value()) {
         value = value_type{};
       }
-      return set_param_bind(meta_, param_bind, *value, i, mp, is_null, length);
+      return set_param_bind(meta_, param_bind, *value, i, mp, is_null, length,
+                            error);
     }
     else if constexpr (std::is_enum_v<U>) {
       param_bind.buffer_type = MYSQL_TYPE_LONG;
@@ -275,6 +345,7 @@ class mysql {
       param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
       param_bind.length = length;
+      param_bind.error = error;
     }
     else if constexpr (is_db_text_type_v<U>) {
       unsigned long buffer_size = 256;
@@ -291,6 +362,7 @@ class mysql {
       param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
       param_bind.length = length;
+      param_bind.error = error;
     }
     else if constexpr (iguana::array_v<U>) {
       param_bind.buffer_type = MYSQL_TYPE_VAR_STRING;
@@ -299,6 +371,7 @@ class mysql {
       param_bind.buffer = it->second.data();
       param_bind.buffer_length = (unsigned long)sizeof(U);
       param_bind.length = length;
+      param_bind.error = error;
     }
     else if constexpr (std::is_same_v<blob, U>) {
       unsigned long buffer_size = 65536;
@@ -316,6 +389,7 @@ class mysql {
       param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
       param_bind.length = length;
+      param_bind.error = error;
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
@@ -337,18 +411,37 @@ class mysql {
       param_bind.buffer = it->second.data();
       param_bind.buffer_length = buffer_size;
       param_bind.length = length;
+      param_bind.error = error;
     }
 #endif
     else {
       static_assert(!sizeof(U), "this type has not supported yet");
     }
-    param_bind.is_null = (B)&is_null;
+    param_bind.is_null = &is_null;
   }
 
   template <typename T>
   void set_value(MYSQL_BIND &param_bind, T &&value, int i,
-                 std::map<size_t, std::vector<char>> &mp) {
+                 std::map<size_t, std::vector<char>> &mp, bool is_null) {
     using U = ylt::reflection::remove_cvref_t<T>;
+    if (is_null) {
+      if constexpr (is_optional_v<U>::value || std::is_enum_v<U> ||
+                    std::is_arithmetic_v<U> || std::is_same_v<std::string, U> ||
+                    std::is_same_v<std::string_view, U> ||
+                    is_db_text_type_v<U> || std::is_same_v<blob, U>) {
+        value = {};
+      }
+      else if constexpr (iguana::array_v<U>) {
+        std::memset(value.data(), 0, value.size());
+      }
+#ifdef ORMPP_WITH_CSTRING
+      else if constexpr (std::is_same_v<CString, U>) {
+        value.Empty();
+      }
+#endif
+      return;
+    }
+
     if constexpr (is_optional_v<U>::value) {
       using value_type = typename U::value_type;
       if constexpr (std::is_arithmetic_v<value_type>) {
@@ -359,24 +452,18 @@ class mysql {
       else {
         value_type item;
         value = std::move(item);
-        return set_value(param_bind, *value, i, mp);
+        return set_value(param_bind, *value, i, mp, false);
       }
     }
     else if constexpr (std::is_same_v<std::string, U>) {
-      auto &vec = mp[i];
-      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
-      value.assign(vec.data(), vec.data() + len);
+      value = get_column_text_value(param_bind, i, mp);
     }
     else if constexpr (std::is_same_v<std::string_view, U>) {
-      auto &vec = mp[i];
-      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
-      sv_.assign(vec.data(), vec.data() + len);
+      sv_ = get_column_text_value(param_bind, i, mp);
       value = sv_;
     }
     else if constexpr (is_db_text_type_v<U>) {
-      auto &vec = mp[i];
-      auto len = param_bind.length ? *param_bind.length : strlen(vec.data());
-      value.value.assign(vec.data(), vec.data() + len);
+      value.value = get_column_text_value(param_bind, i, mp);
     }
     else if constexpr (iguana::array_v<U>) {
       auto &vec = mp[i];
@@ -384,7 +471,14 @@ class mysql {
     }
     else if constexpr (std::is_same_v<blob, U>) {
       auto &vec = mp[i];
-      value = blob(vec.data(), vec.data() + get_blob_len(i));
+      auto len = param_bind.length ? *param_bind.length : get_blob_len(i);
+      if ((param_bind.error && *param_bind.error) ||
+          len > param_bind.buffer_length) {
+        value = fetch_column_data(i, param_bind.buffer_type, len);
+      }
+      else {
+        value = blob(vec.data(), vec.data() + len);
+      }
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
@@ -476,8 +570,9 @@ class mysql {
       }
     }
 
-    std::array<decltype(std::declval<MYSQL_BIND>().is_null), SIZE> nulls = {};
+    std::array<mysql_null_type, SIZE> nulls = {};
     std::array<unsigned long, SIZE> lengths = {};
+    std::array<mysql_error_type, SIZE> errors = {};
     std::array<MYSQL_BIND, SIZE> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -485,10 +580,10 @@ class mysql {
     size_t index = 0;
     std::vector<T> v;
     ylt::reflection::for_each(
-        t, [&param_binds, &index, &nulls, &lengths, &mp, this](
+        t, [&param_binds, &index, &nulls, &lengths, &errors, &mp, this](
                auto &field, auto /*name*/, auto /*index*/) {
           set_param_bind(this->meta_, param_binds[index], field, index, mp,
-                         nulls[index], &lengths[index]);
+                         nulls[index], &lengths[index], &errors[index]);
           index++;
         });
 
@@ -509,24 +604,14 @@ class mysql {
     int fetch_ret = 0;
     while ((fetch_ret = mysql_stmt_fetch(stmt_)) == 0 ||
            fetch_ret == MYSQL_DATA_TRUNCATED) {
-      ylt::reflection::for_each(
-          t, [&param_binds, &mp, this](auto &field, auto /*name*/, auto index) {
-            set_value(param_binds.at(index), field, index, mp);
-          });
+      ylt::reflection::for_each(t, [&param_binds, &nulls, &mp, this](
+                                       auto &field, auto /*name*/, auto index) {
+        set_value(param_binds.at(index), field, index, mp, nulls.at(index));
+      });
 
       for (auto &p : mp) {
         p.second.assign(p.second.size(), 0);
       }
-
-      ylt::reflection::for_each(t, [nulls](auto &field, auto /*name*/,
-                                           auto index) {
-        if (nulls.at(index)) {
-          using U = ylt::reflection::remove_cvref_t<decltype(field)>;
-          if constexpr (is_optional_v<U>::value || std::is_arithmetic_v<U>) {
-            field = {};
-          }
-        }
-      });
 
       v.push_back(std::move(t));
     }
@@ -573,10 +658,9 @@ class mysql {
       }
     }
 
-    std::array<decltype(std::declval<MYSQL_BIND>().is_null),
-               result_size<T>::value>
-        nulls = {};
+    std::array<mysql_null_type, result_size<T>::value> nulls = {};
     std::array<unsigned long, result_size<T>::value> lengths = {};
+    std::array<mysql_error_type, result_size<T>::value> errors = {};
     std::array<MYSQL_BIND, result_size<T>::value> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -585,21 +669,22 @@ class mysql {
     std::vector<T> v;
     ormpp::for_each(
         tp,
-        [&param_binds, &index, &nulls, &lengths, &mp, this](auto &item,
-                                                            auto /*index*/) {
+        [&param_binds, &index, &nulls, &lengths, &errors, &mp, this](
+            auto &item, auto /*index*/) {
           using U = ylt::reflection::remove_cvref_t<decltype(item)>;
           if constexpr (iguana::ylt_refletable_v<U>) {
             ylt::reflection::for_each(
-                item, [&param_binds, &index, &nulls, &lengths, &mp, this](
-                          auto &field, auto /*name*/, auto /*index*/) {
+                item, [&param_binds, &index, &nulls, &lengths, &errors, &mp,
+                       this](auto &field, auto /*name*/, auto /*index*/) {
                   set_param_bind(this->meta_, param_binds[index], field, index,
-                                 mp, nulls[index], &lengths[index]);
+                                 mp, nulls[index], &lengths[index],
+                                 &errors[index]);
                   index++;
                 });
           }
           else {
             set_param_bind(this->meta_, param_binds[index], item, index, mp,
-                           nulls[index], &lengths[index]);
+                           nulls[index], &lengths[index], &errors[index]);
             index++;
           }
         },
@@ -625,18 +710,21 @@ class mysql {
       index = 0;
       ormpp::for_each(
           tp,
-          [&param_binds, &index, &mp, this](auto &item, auto /*index*/) {
+          [&param_binds, &index, &nulls, &mp, this](auto &item,
+                                                    auto /*index*/) {
             using U = ylt::reflection::remove_cvref_t<decltype(item)>;
             if constexpr (iguana::ylt_refletable_v<U>) {
               ylt::reflection::for_each(
-                  item, [&param_binds, &index, &mp, this](
+                  item, [&param_binds, &index, &nulls, &mp, this](
                             auto &field, auto /*name*/, auto /*index*/) {
-                    set_value(param_binds.at(index), field, index, mp);
+                    set_value(param_binds.at(index), field, index, mp,
+                              nulls.at(index));
                     index++;
                   });
             }
             else {
-              set_value(param_binds.at(index), item, index, mp);
+              set_value(param_binds.at(index), item, index, mp,
+                        nulls.at(index));
               index++;
             }
           },
@@ -645,35 +733,6 @@ class mysql {
       for (auto &p : mp) {
         p.second.assign(p.second.size(), 0);
       }
-
-      index = 0;
-      ormpp::for_each(
-          tp,
-          [&index, nulls](auto &item, auto /*index*/) {
-            using U = ylt::reflection::remove_cvref_t<decltype(item)>;
-            if constexpr (iguana::ylt_refletable_v<U>) {
-              ylt::reflection::for_each(item, [&index, nulls](auto &field,
-                                                              auto /*name*/,
-                                                              auto /*index*/) {
-                if (nulls.at(index++)) {
-                  using W = ylt::reflection::remove_cvref_t<decltype(field)>;
-                  if constexpr (is_optional_v<W>::value ||
-                                std::is_arithmetic_v<W>) {
-                    field = {};
-                  }
-                }
-              });
-            }
-            else {
-              if (nulls.at(index++)) {
-                if constexpr (is_optional_v<U>::value ||
-                              std::is_arithmetic_v<U>) {
-                  item = {};
-                }
-              }
-            }
-          },
-          std::make_index_sequence<SIZE>{});
 
       v.push_back(std::move(tp));
     }
@@ -739,8 +798,9 @@ class mysql {
 
     auto meta_guard = guard_result(meta_);
 
-    std::array<decltype(std::declval<MYSQL_BIND>().is_null), SIZE> nulls = {};
+    std::array<mysql_null_type, SIZE> nulls = {};
     std::array<unsigned long, SIZE> lengths = {};
+    std::array<mysql_error_type, SIZE> errors = {};
     std::array<MYSQL_BIND, SIZE> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -748,10 +808,10 @@ class mysql {
     size_t index = 0;
     std::vector<T> v;
     ylt::reflection::for_each(
-        t, [&param_binds, &index, &nulls, &lengths, &mp, this](
+        t, [&param_binds, &index, &nulls, &lengths, &errors, &mp, this](
                auto &field, auto /*name*/, auto /*index*/) {
           set_param_bind(this->meta_, param_binds[index], field, index, mp,
-                         nulls[index], &lengths[index]);
+                         nulls[index], &lengths[index], &errors[index]);
           index++;
         });
 
@@ -772,24 +832,14 @@ class mysql {
     int fetch_ret3 = 0;
     while ((fetch_ret3 = mysql_stmt_fetch(stmt_)) == 0 ||
            fetch_ret3 == MYSQL_DATA_TRUNCATED) {
-      ylt::reflection::for_each(
-          t, [&param_binds, &mp, this](auto &field, auto /*name*/, auto index) {
-            set_value(param_binds.at(index), field, index, mp);
-          });
+      ylt::reflection::for_each(t, [&param_binds, &nulls, &mp, this](
+                                       auto &field, auto /*name*/, auto index) {
+        set_value(param_binds.at(index), field, index, mp, nulls.at(index));
+      });
 
       for (auto &p : mp) {
         p.second.assign(p.second.size(), 0);
       }
-
-      ylt::reflection::for_each(t, [nulls](auto &field, auto /*name*/,
-                                           auto index) {
-        if (nulls.at(index)) {
-          using U = std::remove_reference_t<decltype(field)>;
-          if constexpr (is_optional_v<U>::value || std::is_arithmetic_v<U>) {
-            field = {};
-          }
-        }
-      });
 
       v.push_back(std::move(t));
     }
@@ -839,10 +889,9 @@ class mysql {
 
     auto meta_guard = guard_result(meta_);
 
-    std::array<decltype(std::declval<MYSQL_BIND>().is_null),
-               result_size<T>::value>
-        nulls = {};
+    std::array<mysql_null_type, result_size<T>::value> nulls = {};
     std::array<unsigned long, result_size<T>::value> lengths = {};
+    std::array<mysql_error_type, result_size<T>::value> errors = {};
     std::array<MYSQL_BIND, result_size<T>::value> param_binds = {};
     std::map<size_t, std::vector<char>> mp;
 
@@ -851,21 +900,22 @@ class mysql {
     std::vector<T> v;
     ormpp::for_each(
         tp,
-        [&param_binds, &index, &nulls, &lengths, &mp, this](auto &item,
-                                                            auto /*index*/) {
+        [&param_binds, &index, &nulls, &lengths, &errors, &mp, this](
+            auto &item, auto /*index*/) {
           using U = ylt::reflection::remove_cvref_t<decltype(item)>;
           if constexpr (iguana::ylt_refletable_v<U>) {
             ylt::reflection::for_each(
-                item, [&param_binds, &index, &nulls, &lengths, &mp, this](
-                          auto &field, auto /*name*/, auto /*index*/) {
+                item, [&param_binds, &index, &nulls, &lengths, &errors, &mp,
+                       this](auto &field, auto /*name*/, auto /*index*/) {
                   set_param_bind(this->meta_, param_binds[index], field, index,
-                                 mp, nulls[index], &lengths[index]);
+                                 mp, nulls[index], &lengths[index],
+                                 &errors[index]);
                   index++;
                 });
           }
           else {
             set_param_bind(this->meta_, param_binds[index], item, index, mp,
-                           nulls[index], &lengths[index]);
+                           nulls[index], &lengths[index], &errors[index]);
             index++;
           }
         },
@@ -891,18 +941,21 @@ class mysql {
       index = 0;
       ormpp::for_each(
           tp,
-          [&param_binds, &index, &mp, this](auto &item, auto /*index*/) {
+          [&param_binds, &index, &nulls, &mp, this](auto &item,
+                                                    auto /*index*/) {
             using U = ylt::reflection::remove_cvref_t<decltype(item)>;
             if constexpr (iguana::ylt_refletable_v<U>) {
               ylt::reflection::for_each(
-                  item, [&param_binds, &index, &mp, this](
+                  item, [&param_binds, &index, &nulls, &mp, this](
                             auto &field, auto /*name*/, auto /*index*/) {
-                    set_value(param_binds.at(index), field, index, mp);
+                    set_value(param_binds.at(index), field, index, mp,
+                              nulls.at(index));
                     index++;
                   });
             }
             else {
-              set_value(param_binds.at(index), item, index, mp);
+              set_value(param_binds.at(index), item, index, mp,
+                        nulls.at(index));
               index++;
             }
           },
@@ -911,35 +964,6 @@ class mysql {
       for (auto &p : mp) {
         p.second.assign(p.second.size(), 0);
       }
-
-      index = 0;
-      ormpp::for_each(
-          tp,
-          [&index, nulls](auto &item, auto /*index*/) {
-            using U = ylt::reflection::remove_cvref_t<decltype(item)>;
-            if constexpr (iguana::ylt_refletable_v<U>) {
-              ylt::reflection::for_each(
-                  item,
-                  [&index, nulls](auto &field, auto /*name*/, auto /*index*/) {
-                    if (nulls.at(index++)) {
-                      using W = std::remove_reference_t<decltype(field)>;
-                      if constexpr (is_optional_v<W>::value ||
-                                    std::is_arithmetic_v<W>) {
-                        field = {};
-                      }
-                    }
-                  });
-            }
-            else {
-              if (nulls.at(index++)) {
-                if constexpr (is_optional_v<U>::value ||
-                              std::is_arithmetic_v<U>) {
-                  item = {};
-                }
-              }
-            }
-          },
-          std::make_index_sequence<SIZE>{});
 
       v.push_back(std::move(tp));
     }
