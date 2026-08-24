@@ -5,6 +5,7 @@
 #ifndef ORM_MYSQL_HPP
 #define ORM_MYSQL_HPP
 
+#include <atomic>
 #include <climits>
 #include <cstring>
 #include <deque>
@@ -159,6 +160,14 @@ class mysql {
 
   int get_last_affect_rows() { return last_affect_rows_; }
 
+  static void set_max_mysql_result_buffer_size(unsigned long size) {
+    max_mysql_result_buffer_size_.store(size, std::memory_order_relaxed);
+  }
+
+  static unsigned long get_max_mysql_result_buffer_size() {
+    return max_mysql_result_buffer_size_.load(std::memory_order_relaxed);
+  }
+
  private:
   using mysql_null_type =
       std::remove_pointer_t<decltype(std::declval<MYSQL_BIND>().is_null)>;
@@ -166,9 +175,9 @@ class mysql {
       std::remove_pointer_t<decltype(std::declval<MYSQL_BIND>().error)>;
   using mysql_text_param_storage = std::deque<std::string>;
   using mysql_blob_param_storage = std::deque<blob>;
-  using mysql_param_length_storage = std::deque<unsigned long>;
-  static constexpr unsigned long max_mysql_result_buffer_size =
-      64UL * 1024UL * 1024UL;
+  using mysql_param_length_storage = std::vector<unsigned long>;
+  inline static std::atomic<unsigned long> max_mysql_result_buffer_size_{
+      64UL * 1024UL * 1024UL};
 
   static constexpr unsigned long mysql_buffer_length(std::size_t size) {
     if (size > (std::numeric_limits<unsigned long>::max)()) {
@@ -198,10 +207,12 @@ class mysql {
 
   std::optional<std::vector<char>> fetch_column_data(
       size_t column, enum_field_types buffer_type, unsigned long length) {
-    if (length > max_mysql_result_buffer_size) {
+    auto max_buffer_size =
+        max_mysql_result_buffer_size_.load(std::memory_order_relaxed);
+    if (length > max_buffer_size) {
       set_last_error("mysql result column length " + std::to_string(length) +
                      " exceeds max buffer size " +
-                     std::to_string(max_mysql_result_buffer_size));
+                     std::to_string(max_buffer_size));
       return std::nullopt;
     }
 
@@ -257,69 +268,34 @@ class mysql {
     return std::string(vec.data(), vec.data() + len);
   }
 
-  static void bind_text_param_ref(MYSQL_BIND &param, const char *data,
-                                  std::size_t size,
-                                  mysql_param_length_storage &length_storage) {
-    param.buffer_type = MYSQL_TYPE_STRING;
-    // Statements execute synchronously here; MySQL treats input parameter
-    // buffers as read-only despite the C API type.
-    param.buffer = const_cast<void *>(static_cast<const void *>(data));
-    param.buffer_length = mysql_buffer_length(size);
-    length_storage.push_back(param.buffer_length);
-    param.length = &length_storage.back();
-  }
-
-  static void bind_text_param_copy(MYSQL_BIND &param, const char *data,
-                                   std::size_t size,
-                                   mysql_text_param_storage &storage,
-                                   mysql_param_length_storage &length_storage) {
-    storage.emplace_back(data, data + size);
-    auto &stored = storage.back();
-    bind_text_param_ref(param, stored.data(), stored.size(), length_storage);
-  }
-
-  template <typename T>
   static void bind_text_param(MYSQL_BIND &param, const char *data,
                               std::size_t size,
                               mysql_text_param_storage &storage,
                               mysql_param_length_storage &length_storage) {
-    if constexpr (std::is_lvalue_reference_v<T &&>) {
-      bind_text_param_ref(param, data, size, length_storage);
-    }
-    else {
-      bind_text_param_copy(param, data, size, storage, length_storage);
-    }
-  }
-
-  static void bind_blob_param_ref(MYSQL_BIND &param, const blob &value,
-                                  mysql_param_length_storage &length_storage) {
-    param.buffer_type = MYSQL_TYPE_BLOB;
-    // Statements execute synchronously here; MySQL treats input parameter
-    // buffers as read-only despite the C API type.
-    param.buffer = const_cast<void *>(static_cast<const void *>(value.data()));
-    param.buffer_length = mysql_buffer_length(value.size());
+    // Text-like parameters are copied so MYSQL_BIND never points at a temporary
+    // wrapper/string_view owned by the caller.
+    storage.emplace_back(data, data + size);
+    auto &stored = storage.back();
+    param.buffer_type = MYSQL_TYPE_STRING;
+    param.buffer =
+        stored.empty() ? nullptr : static_cast<void *>(stored.data());
+    param.buffer_length = mysql_buffer_length(stored.size());
     length_storage.push_back(param.buffer_length);
     param.length = &length_storage.back();
   }
 
-  static void bind_blob_param_copy(MYSQL_BIND &param, const blob &value,
-                                   mysql_blob_param_storage &storage,
-                                   mysql_param_length_storage &length_storage) {
-    storage.push_back(value);
-    auto &stored = storage.back();
-    bind_blob_param_ref(param, stored, length_storage);
-  }
-
-  template <typename T>
   static void bind_blob_param(MYSQL_BIND &param, const blob &value,
                               mysql_blob_param_storage &storage,
                               mysql_param_length_storage &length_storage) {
-    if constexpr (std::is_lvalue_reference_v<T &&>) {
-      bind_blob_param_ref(param, value, length_storage);
-    }
-    else {
-      bind_blob_param_copy(param, value, storage, length_storage);
-    }
+    // Blob parameters are copied for stable storage and an explicit length.
+    storage.push_back(value);
+    auto &stored = storage.back();
+    param.buffer_type = MYSQL_TYPE_BLOB;
+    param.buffer =
+        stored.empty() ? nullptr : static_cast<void *>(stored.data());
+    param.buffer_length = mysql_buffer_length(stored.size());
+    length_storage.push_back(param.buffer_length);
+    param.length = &length_storage.back();
   }
 
   template <typename T>
@@ -363,25 +339,19 @@ class mysql {
     }
     else if constexpr (std::is_same_v<std::string, U> ||
                        std::is_same_v<std::string_view, U>) {
-      if constexpr (std::is_same_v<std::string_view, U>) {
-        bind_text_param_copy(param, value.data(), value.size(), text_storage,
-                             length_storage);
-      }
-      else {
-        bind_text_param<T>(param, value.data(), value.size(), text_storage,
-                           length_storage);
-      }
+      bind_text_param(param, value.data(), value.size(), text_storage,
+                      length_storage);
     }
     else if constexpr (is_db_text_type_v<U>) {
-      bind_text_param<T>(param, value.data(), value.size(), text_storage,
-                         length_storage);
+      bind_text_param(param, value.data(), value.size(), text_storage,
+                      length_storage);
     }
     else if constexpr (iguana::array_v<U>) {
       using value_type = typename U::value_type;
       if constexpr (std::is_same_v<std::remove_cv_t<value_type>, char>) {
-        bind_text_param<T>(param, value.data(),
-                           bounded_c_string_length(value.data(), value.size()),
-                           text_storage, length_storage);
+        bind_text_param(param, value.data(),
+                        bounded_c_string_length(value.data(), value.size()),
+                        text_storage, length_storage);
       }
       else {
         static_assert(!sizeof(U), "only char arrays are supported as strings");
@@ -390,9 +360,9 @@ class mysql {
     else if constexpr (iguana::c_array_v<U>) {
       using value_type = std::remove_extent_t<U>;
       if constexpr (std::is_same_v<std::remove_cv_t<value_type>, char>) {
-        bind_text_param<T>(param, value,
-                           bounded_c_string_length(value, std::extent_v<U>),
-                           text_storage, length_storage);
+        bind_text_param(param, value,
+                        bounded_c_string_length(value, std::extent_v<U>),
+                        text_storage, length_storage);
       }
       else {
         static_assert(!sizeof(U), "only char arrays are supported as strings");
@@ -404,17 +374,17 @@ class mysql {
         param.buffer_type = MYSQL_TYPE_NULL;
       }
       else {
-        bind_text_param<T>(param, value, strlen(value), text_storage,
-                           length_storage);
+        bind_text_param(param, value, strlen(value), text_storage,
+                        length_storage);
       }
     }
     else if constexpr (std::is_same_v<blob, U>) {
-      bind_blob_param<T>(param, value, blob_storage, length_storage);
+      bind_blob_param(param, value, blob_storage, length_storage);
     }
 #ifdef ORMPP_WITH_CSTRING
     else if constexpr (std::is_same_v<CString, U>) {
-      bind_text_param<T>(param, value.GetString(), value.GetLength(),
-                         text_storage, length_storage);
+      bind_text_param(param, value.GetString(), value.GetLength(), text_storage,
+                      length_storage);
     }
 #endif
     else {
@@ -671,6 +641,7 @@ class mysql {
     mysql_param_length_storage param_length_storage;
     std::vector<MYSQL_BIND> sql_param_binds;
     if constexpr (sizeof...(Args) > 0) {
+      param_length_storage.reserve(sizeof...(Args));
       try {
         (set_param_bind(sql_param_binds, args, text_param_storage,
                         blob_param_storage, param_length_storage),
@@ -728,6 +699,7 @@ class mysql {
     mysql_param_length_storage param_length_storage;
     std::vector<MYSQL_BIND> sql_param_binds;
     if constexpr (sizeof...(Args) > 0) {
+      param_length_storage.reserve(sizeof...(Args));
       try {
         (set_param_bind(sql_param_binds, args, text_param_storage,
                         blob_param_storage, param_length_storage),
@@ -833,6 +805,7 @@ class mysql {
     mysql_param_length_storage param_length_storage;
     std::vector<MYSQL_BIND> sql_param_binds;
     if constexpr (sizeof...(Args) > 0) {
+      param_length_storage.reserve(sizeof...(Args));
       try {
         (set_param_bind(sql_param_binds, args, text_param_storage,
                         blob_param_storage, param_length_storage),
@@ -1367,6 +1340,7 @@ class mysql {
     mysql_text_param_storage text_param_storage;
     mysql_blob_param_storage blob_param_storage;
     mysql_param_length_storage param_length_storage;
+    param_length_storage.reserve(ylt::reflection::members_count_v<T> * 2);
     constexpr auto arr = indexs_of<members...>();
     try {
       if constexpr (sizeof...(members) > 0) {
