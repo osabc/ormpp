@@ -167,7 +167,7 @@ class mysql {
   using mysql_text_param_storage = std::deque<std::string>;
   using mysql_blob_param_storage = std::deque<blob>;
   using mysql_param_length_storage = std::deque<unsigned long>;
-  inline static unsigned long max_mysql_result_buffer_size_ =
+  static constexpr unsigned long max_mysql_result_buffer_size =
       64UL * 1024UL * 1024UL;
 
   static constexpr unsigned long mysql_buffer_length(std::size_t size) {
@@ -176,17 +176,6 @@ class mysql {
     }
 
     return static_cast<unsigned long>(size);
-  }
-
-  static constexpr unsigned long mysql_buffer_length_with_null(
-      unsigned long size) {
-    if (size == (std::numeric_limits<unsigned long>::max)()) {
-      throw std::length_error(
-          "mysql result column length exceeds supported "
-          "buffer length");
-    }
-
-    return size + 1;
   }
 
   static constexpr unsigned int mysql_column_index(size_t index) {
@@ -209,15 +198,15 @@ class mysql {
 
   std::optional<std::vector<char>> fetch_column_data(
       size_t column, enum_field_types buffer_type, unsigned long length) {
-    if (length > max_mysql_result_buffer_size_) {
+    if (length > max_mysql_result_buffer_size) {
       set_last_error("mysql result column length " + std::to_string(length) +
                      " exceeds max buffer size " +
-                     std::to_string(max_mysql_result_buffer_size_));
+                     std::to_string(max_mysql_result_buffer_size));
       return std::nullopt;
     }
 
-    std::vector<char> buffer(
-        static_cast<std::size_t>(mysql_buffer_length_with_null(length)), 0);
+    auto buffer_size = static_cast<std::size_t>(length) + 1;
+    std::vector<char> buffer(buffer_size, 0);
     unsigned long fetched_length = 0;
     MYSQL_BIND param = {};
     param.buffer_type = buffer_type;
@@ -272,7 +261,8 @@ class mysql {
                                   std::size_t size,
                                   mysql_param_length_storage &length_storage) {
     param.buffer_type = MYSQL_TYPE_STRING;
-    // MySQL treats input parameter buffers as read-only despite the C API type.
+    // Statements execute synchronously here; MySQL treats input parameter
+    // buffers as read-only despite the C API type.
     param.buffer = const_cast<void *>(static_cast<const void *>(data));
     param.buffer_length = mysql_buffer_length(size);
     length_storage.push_back(param.buffer_length);
@@ -304,7 +294,8 @@ class mysql {
   static void bind_blob_param_ref(MYSQL_BIND &param, const blob &value,
                                   mysql_param_length_storage &length_storage) {
     param.buffer_type = MYSQL_TYPE_BLOB;
-    // MySQL treats input parameter buffers as read-only despite the C API type.
+    // Statements execute synchronously here; MySQL treats input parameter
+    // buffers as read-only despite the C API type.
     param.buffer = const_cast<void *>(static_cast<const void *>(value.data()));
     param.buffer_length = mysql_buffer_length(value.size());
     length_storage.push_back(param.buffer_length);

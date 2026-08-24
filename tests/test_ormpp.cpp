@@ -271,6 +271,11 @@ TEST_CASE("test mysql long string") {
         "SELECT ?", ormpp::date{"2026-08-24"});
     CHECK(wrapper_vec.size() == 1);
     CHECK(std::get<0>(wrapper_vec[0]) == "2026-08-24");
+
+    auto view_vec =
+        mysql.query_s<std::tuple<std::string_view>>("SELECT 'view-value'");
+    CHECK(view_vec.size() == 1);
+    CHECK(std::get<0>(view_vec[0]) == "view-value");
   }
 #endif
 }
