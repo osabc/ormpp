@@ -117,7 +117,7 @@ inline db_field_type_entity make_db_field_type_entity(
   }
   else {
     item.deleted_at = std::nullopt;
-    item.ratio = ormpp::decimal<12, 4>{"12.3456"};
+    item.ratio = std::nullopt;
   }
   return item;
 }
@@ -145,47 +145,80 @@ inline void check_db_field_type_entity(const db_field_type_entity &actual,
   if (expected.deleted_at.has_value()) {
     CHECK(actual.deleted_at->value == expected.deleted_at->value);
   }
-  REQUIRE(actual.ratio.has_value());
-  REQUIRE(expected.ratio.has_value());
-  CHECK(actual.ratio->value == expected.ratio->value);
+  CHECK(actual.ratio.has_value() == expected.ratio.has_value());
+  if (expected.ratio.has_value()) {
+    CHECK(actual.ratio->value == expected.ratio->value);
+  }
 }
 
 template <typename DB>
-inline void check_db_field_type_crud(DB &database,
-                                     std::string_view id_condition) {
+inline void check_db_field_type_crud(DB &database) {
   auto item = make_db_field_type_entity(true);
   CHECK(database.insert(item) == 1);
 
-  auto rows = database.template query_s<db_field_type_entity>();
+  auto rows = database.select(ormpp::all)
+                  .template from<db_field_type_entity>()
+                  .collect();
   REQUIRE(rows.size() == 1);
   check_db_field_type_entity(rows.front(), item);
 
   auto updated = make_updated_db_field_type_entity(rows.front());
-  CHECK(database.update(updated) == 1);
+  CHECK(database.template update<db_field_type_entity>()
+            .set(col(&db_field_type_entity::birthday), updated.birthday)
+            .set(col(&db_field_type_entity::start_time), updated.start_time)
+            .set(col(&db_field_type_entity::created_at), updated.created_at)
+            .set(col(&db_field_type_entity::updated_at), updated.updated_at)
+            .set(col(&db_field_type_entity::amount), updated.amount)
+            .set(col(&db_field_type_entity::deleted_at), *updated.deleted_at)
+            .set(col(&db_field_type_entity::ratio), *updated.ratio)
+            .where(col(&db_field_type_entity::id) == updated.id)
+            .execute() == 1);
 
-  auto updated_rows = database.template query_s<db_field_type_entity>(
-      std::string(id_condition), updated.id);
+  auto updated_rows =
+      database.select(ormpp::all)
+          .template from<db_field_type_entity>()
+          .where(col(&db_field_type_entity::id) == updated.id &&
+                 col(&db_field_type_entity::birthday) == updated.birthday &&
+                 col(&db_field_type_entity::start_time) == updated.start_time &&
+                 col(&db_field_type_entity::created_at) == updated.created_at &&
+                 col(&db_field_type_entity::updated_at) == updated.updated_at &&
+                 col(&db_field_type_entity::amount) == updated.amount &&
+                 col(&db_field_type_entity::deleted_at) ==
+                     *updated.deleted_at &&
+                 col(&db_field_type_entity::ratio) == *updated.ratio)
+          .collect();
   REQUIRE(updated_rows.size() == 1);
   check_db_field_type_entity(updated_rows.front(), updated);
 
-  CHECK(database.template delete_records_s<db_field_type_entity>(
-            std::string(id_condition), updated.id) == 1);
-  CHECK(database.template query_s<db_field_type_entity>().empty());
+  CHECK(database.template remove<db_field_type_entity>()
+            .where(col(&db_field_type_entity::id) == updated.id)
+            .execute() == 1);
+  CHECK(database.select(ormpp::all)
+            .template from<db_field_type_entity>()
+            .collect()
+            .empty());
 }
 
 template <typename DB>
-inline void check_db_field_type_optional_null(DB &database,
-                                              std::string_view id_condition) {
+inline void check_db_field_type_optional_null(DB &database) {
   auto item = make_db_field_type_entity(false);
   CHECK(database.insert(item) == 1);
 
-  auto rows = database.template query_s<db_field_type_entity>();
+  auto rows = database.select(ormpp::all)
+                  .template from<db_field_type_entity>()
+                  .where(col(&db_field_type_entity::deleted_at).null() &&
+                         col(&db_field_type_entity::ratio).null())
+                  .collect();
   REQUIRE(rows.size() == 1);
   check_db_field_type_entity(rows.front(), item);
 
-  CHECK(database.template delete_records_s<db_field_type_entity>(
-            std::string(id_condition), rows.front().id) == 1);
-  CHECK(database.template query_s<db_field_type_entity>().empty());
+  CHECK(database.template remove<db_field_type_entity>()
+            .where(col(&db_field_type_entity::id) == rows.front().id)
+            .execute() == 1);
+  CHECK(database.select(ormpp::all)
+            .template from<db_field_type_entity>()
+            .collect()
+            .empty());
 }
 
 TEST_CASE("database field type mappings") {
@@ -218,8 +251,8 @@ TEST_CASE("sqlite database field types CRUD as text values") {
   REQUIRE(sqlite.connect(":memory:"));
   REQUIRE(sqlite.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-  check_db_field_type_crud(sqlite, "id=?");
-  check_db_field_type_optional_null(sqlite, "id=?");
+  check_db_field_type_crud(sqlite);
+  check_db_field_type_optional_null(sqlite);
 }
 
 TEST_CASE("mysql database field types CRUD as text values") {
@@ -229,8 +262,8 @@ TEST_CASE("mysql database field types CRUD as text values") {
     mysql.execute("drop table if exists db_field_type_entity");
     REQUIRE(mysql.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-    check_db_field_type_crud(mysql, "id=?");
-    check_db_field_type_optional_null(mysql, "id=?");
+    check_db_field_type_crud(mysql);
+    check_db_field_type_optional_null(mysql);
   }
 #endif
 }
@@ -243,7 +276,7 @@ TEST_CASE("postgresql database field types CRUD as text values") {
     REQUIRE(
         postgres.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
-    check_db_field_type_crud(postgres, "id=$1");
+    check_db_field_type_crud(postgres);
   }
 #endif
 }
