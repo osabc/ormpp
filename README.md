@@ -1212,8 +1212,8 @@ ormpp 自动将 C++ 类型映射为对应数据库的 SQL 类型：
 MySQL 读取超出初始缓冲区的长文本或 blob 字段时，单列补取缓冲区默认上限为 64MB，可通过
 `mysql::set_max_mysql_result_buffer_size()` 调整；超过
 `mysql::mysql_result_buffer_size_hard_limit`（1GB）的设置会被截断到该上限。
-查询结果中的 `std::string_view` 指向 ormpp 内部临时存储，仅适合立即读取；需要跨行或跨查询保存时请使用
-`std::string`。
+查询结果中的 `std::string_view` 指向连接内部存储，在同一次查询的多行、多列结果中保持有效；
+该连接发起下一次查询或被销毁后视图会失效，需要长期保存时请使用 `std::string`。
 `std::array<char, N>` 和 C 字符数组按 C 字符串语义绑定，遇到 `\0` 会结束；需要保存含零字节的数据时请使用
 `blob`。
 

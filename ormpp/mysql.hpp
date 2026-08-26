@@ -5,9 +5,11 @@
 #ifndef ORM_MYSQL_HPP
 #define ORM_MYSQL_HPP
 
+#include <algorithm>
 #include <atomic>
 #include <climits>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -623,8 +625,8 @@ class mysql {
       if (!text) {
         return false;
       }
-      sv_ = std::move(*text);
-      value = sv_;
+      string_view_storage_.push_back(std::move(*text));
+      value = string_view_storage_.back();
     }
     else if constexpr (is_db_text_type_v<U>) {
       auto text = get_column_text_value(param_bind, i, mp);
@@ -726,6 +728,7 @@ class mysql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::ylt_refletable_v<T>, std::vector<T>> query_s(
       const std::string &str, Args &&...args) {
+    string_view_storage_.clear();
     constexpr auto SIZE = ylt::reflection::members_count_v<T>;
     std::string sql =
         contains_select(str) ? str : generate_query_sql<T>(db_type_v, str);
@@ -823,7 +826,7 @@ class mysql {
       }
 
       for (auto &buffer : mp) {
-        buffer.assign(buffer.size(), 0);
+        std::fill(buffer.begin(), buffer.end(), 0);
       }
 
       v.push_back(std::move(t));
@@ -835,6 +838,7 @@ class mysql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::non_ylt_refletable_v<T>, std::vector<T>> query_s(
       const std::string &sql, Args &&...args) {
+    string_view_storage_.clear();
     static_assert(iguana::is_tuple<T>::value);
     constexpr auto SIZE = std::tuple_size_v<T>;
 #ifdef ORMPP_ENABLE_LOG
@@ -965,7 +969,7 @@ class mysql {
       }
 
       for (auto &buffer : mp) {
-        buffer.assign(buffer.size(), 0);
+        std::fill(buffer.begin(), buffer.end(), 0);
       }
 
       v.push_back(std::move(tp));
@@ -1005,6 +1009,7 @@ class mysql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::ylt_refletable_v<T>, std::vector<T>> query(
       Args &&...args) {
+    string_view_storage_.clear();
     constexpr auto SIZE = ylt::reflection::members_count_v<T>;
     std::string sql = generate_query_sql<T>(db_type_v, args...);
 #ifdef ORMPP_ENABLE_LOG
@@ -1080,7 +1085,7 @@ class mysql {
       }
 
       for (auto &buffer : mp) {
-        buffer.assign(buffer.size(), 0);
+        std::fill(buffer.begin(), buffer.end(), 0);
       }
 
       v.push_back(std::move(t));
@@ -1093,6 +1098,7 @@ class mysql {
   template <typename T, typename Arg, typename... Args>
   std::enable_if_t<iguana::non_ylt_refletable_v<T>, std::vector<T>> query(
       const Arg &s, Args &&...args) {
+    string_view_storage_.clear();
     static_assert(iguana::is_tuple<T>::value);
     constexpr auto SIZE = std::tuple_size_v<T>;
 
@@ -1214,7 +1220,7 @@ class mysql {
       }
 
       for (auto &buffer : mp) {
-        buffer.assign(buffer.size(), 0);
+        std::fill(buffer.begin(), buffer.end(), 0);
       }
 
       v.push_back(std::move(tp));
@@ -1624,7 +1630,7 @@ class mysql {
   MYSQL_STMT *stmt_ = nullptr;
   MYSQL_RES *meta_ = nullptr;
   int last_affect_rows_ = 0;
-  inline static std::string sv_;
+  std::deque<std::string> string_view_storage_;
   inline static std::string last_error_;
   inline static bool has_error_ = false;
   inline static bool transaction_ = true;

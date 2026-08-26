@@ -295,27 +295,27 @@ auto operator==(col_info<M> field, auto val) {
 }
 
 template <typename M>
-auto operator>=(col_info<M> field, M val) {
+auto operator>=(col_info<M> field, auto val) {
   return build_where(field, val, ">=");
 }
 
 template <typename M>
-auto operator<=(col_info<M> field, M val) {
+auto operator<=(col_info<M> field, auto val) {
   return build_where(field, val, "<=");
 }
 
 template <typename M>
-auto operator!=(col_info<M> field, M val) {
+auto operator!=(col_info<M> field, auto val) {
   return build_where(field, val, "!=");
 }
 
 template <typename M>
-auto operator>(col_info<M> field, M val) {
+auto operator>(col_info<M> field, auto val) {
   return build_where(field, val, ">");
 }
 
 template <typename M>
-auto operator<(col_info<M> field, M val) {
+auto operator<(col_info<M> field, auto val) {
   return build_where(field, val, "<");
 }
 

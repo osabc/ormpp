@@ -244,6 +244,11 @@ TEST_CASE("database field type mappings") {
   for (std::size_t i = 1; i < sqlite_types.size(); ++i) {
     CHECK(sqlite_types[i] == "TEXT");
   }
+
+  auto optional_datetime_condition = col(&db_field_type_entity::deleted_at) >=
+                                     ormpp::datetime{"2026-08-24 00:00:00"};
+  CHECK(optional_datetime_condition.right == "2026-08-24 00:00:00");
+  CHECK(optional_datetime_condition.need_quote);
 }
 
 TEST_CASE("sqlite database field types CRUD as text values") {
@@ -253,6 +258,22 @@ TEST_CASE("sqlite database field types CRUD as text values") {
 
   check_db_field_type_crud(sqlite);
   check_db_field_type_optional_null(sqlite);
+}
+
+TEST_CASE("sqlite string view results keep per-query storage") {
+  dbng<sqlite> sqlite;
+  REQUIRE(sqlite.connect(":memory:"));
+
+  using row_type = std::tuple<std::string_view, std::string_view>;
+  auto rows = sqlite.query_s<row_type>(
+      "SELECT 'row-1-col-1', 'row-1-col-2' "
+      "UNION ALL SELECT 'row-2-col-1', 'row-2-col-2'");
+
+  REQUIRE(rows.size() == 2);
+  CHECK(std::get<0>(rows[0]) == "row-1-col-1");
+  CHECK(std::get<1>(rows[0]) == "row-1-col-2");
+  CHECK(std::get<0>(rows[1]) == "row-2-col-1");
+  CHECK(std::get<1>(rows[1]) == "row-2-col-2");
 }
 
 TEST_CASE("mysql database field types CRUD as text values") {
@@ -277,6 +298,7 @@ TEST_CASE("postgresql database field types CRUD as text values") {
         postgres.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
     check_db_field_type_crud(postgres);
+    check_db_field_type_optional_null(postgres);
   }
 #endif
 }
@@ -330,6 +352,16 @@ TEST_CASE("test mysql long string") {
         mysql.query_s<std::tuple<std::string_view>>("SELECT 'view-value'");
     CHECK(view_vec.size() == 1);
     CHECK(std::get<0>(view_vec[0]) == "view-value");
+
+    using view_row = std::tuple<std::string_view, std::string_view>;
+    auto multi_view_vec = mysql.query_s<view_row>(
+        "SELECT 'row-1-col-1', 'row-1-col-2' "
+        "UNION ALL SELECT 'row-2-col-1', 'row-2-col-2'");
+    REQUIRE(multi_view_vec.size() == 2);
+    CHECK(std::get<0>(multi_view_vec[0]) == "row-1-col-1");
+    CHECK(std::get<1>(multi_view_vec[0]) == "row-1-col-2");
+    CHECK(std::get<0>(multi_view_vec[1]) == "row-2-col-1");
+    CHECK(std::get<1>(multi_view_vec[1]) == "row-2-col-2");
   }
 #endif
 }
