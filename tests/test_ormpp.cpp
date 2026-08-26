@@ -300,6 +300,27 @@ TEST_CASE("test mysql long string") {
     CHECK(null_vec.size() == 1);
     CHECK(!std::get<0>(null_vec[0]).has_value());
 
+    using optional_db_text_tuple =
+        std::tuple<std::optional<ormpp::date>, std::optional<ormpp::time>,
+                   std::optional<ormpp::decimal<10, 2>>>;
+    auto wrapper_null_vec =
+        mysql.query_s<optional_db_text_tuple>("SELECT NULL, NULL, NULL");
+    CHECK(wrapper_null_vec.size() == 1);
+    CHECK(!std::get<0>(wrapper_null_vec[0]).has_value());
+    CHECK(!std::get<1>(wrapper_null_vec[0]).has_value());
+    CHECK(!std::get<2>(wrapper_null_vec[0]).has_value());
+
+    auto optional_wrapper_vec = mysql.query_s<optional_db_text_tuple>(
+        "SELECT DATE('2026-08-24'), TIME('16:30:45'), "
+        "CAST('12.34' AS DECIMAL(10,2))");
+    CHECK(optional_wrapper_vec.size() == 1);
+    REQUIRE(std::get<0>(optional_wrapper_vec[0]).has_value());
+    REQUIRE(std::get<1>(optional_wrapper_vec[0]).has_value());
+    REQUIRE(std::get<2>(optional_wrapper_vec[0]).has_value());
+    CHECK(std::get<0>(optional_wrapper_vec[0])->value == "2026-08-24");
+    CHECK(std::get<1>(optional_wrapper_vec[0])->value == "16:30:45");
+    CHECK(std::get<2>(optional_wrapper_vec[0])->value == "12.34");
+
     auto wrapper_vec = mysql.query_s<std::tuple<std::string>>(
         "SELECT ?", ormpp::date{"2026-08-24"});
     CHECK(wrapper_vec.size() == 1);

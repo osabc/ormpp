@@ -1209,6 +1209,9 @@ ormpp 自动将 C++ 类型映射为对应数据库的 SQL 类型：
 `ormpp::date`、`ormpp::time`、`ormpp::datetime`、`ormpp::timestamp`
 和 `ormpp::decimal<P, S>` 是轻量文本包装类型，ormpp 负责生成对应字段类型并按文本绑定/读取，
 不做日期格式、时间范围或 decimal 精度校验。
+MySQL 读取超出初始缓冲区的长文本或 blob 字段时，单列补取缓冲区默认上限为 64MB，可通过
+`mysql::set_max_mysql_result_buffer_size()` 调整；超过
+`mysql::mysql_result_buffer_size_hard_limit`（1GB）的设置会被截断到该上限。
 查询结果中的 `std::string_view` 指向 ormpp 内部临时存储，仅适合立即读取；需要跨行或跨查询保存时请使用
 `std::string`。
 `std::array<char, N>` 和 C 字符数组按 C 字符串语义绑定，遇到 `\0` 会结束；需要保存含零字节的数据时请使用

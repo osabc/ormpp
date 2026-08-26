@@ -160,10 +160,13 @@ class mysql {
 
   int get_last_affect_rows() { return last_affect_rows_; }
 
+  // Values above this limit are clamped by set_max_mysql_result_buffer_size().
+  static constexpr unsigned long mysql_result_buffer_size_hard_limit =
+      1024UL * 1024UL * 1024UL;
+
   static void set_max_mysql_result_buffer_size(unsigned long size) {
-    constexpr unsigned long hard_limit = 1024UL * 1024UL * 1024UL;
-    if (size > hard_limit) {
-      size = hard_limit;
+    if (size > mysql_result_buffer_size_hard_limit) {
+      size = mysql_result_buffer_size_hard_limit;
     }
     max_mysql_result_buffer_size_.store(size, std::memory_order_relaxed);
   }
@@ -213,6 +216,16 @@ class mysql {
     return len;
   }
 
+  template <typename Optional>
+  static decltype(auto) mysql_optional_value(Optional &&value) {
+    if constexpr (std::is_lvalue_reference_v<Optional &&>) {
+      return *value;
+    }
+    else {
+      return *std::forward<Optional>(value);
+    }
+  }
+
   std::optional<std::vector<char>> fetch_column_data(
       size_t column, enum_field_types buffer_type, unsigned long length) {
     auto max_buffer_size =
@@ -230,7 +243,14 @@ class mysql {
     }
 
     auto buffer_size = static_cast<std::size_t>(length) + 1;
-    std::vector<char> buffer(buffer_size, 0);
+    std::vector<char> buffer;
+    try {
+      buffer = std::vector<char>(buffer_size, 0);
+    } catch (const std::exception &e) {
+      set_last_error("mysql result buffer allocation failed: " +
+                     std::string(e.what()));
+      return std::nullopt;
+    }
     unsigned long fetched_length = 0;
     MYSQL_BIND param = {};
     param.buffer_type = buffer_type;
@@ -350,15 +370,10 @@ class mysql {
     using U = ylt::reflection::remove_cvref_t<T>;
     if constexpr (is_optional_v<U>::value) {
       if (value.has_value()) {
-        if constexpr (std::is_lvalue_reference_v<T &&>) {
-          return set_param_bind(param_binds, value.value(), text_storage,
-                                blob_storage, length_storage, null_storage);
-        }
-        else {
-          return set_param_bind(param_binds, std::move(value).value(),
-                                text_storage, blob_storage, length_storage,
-                                null_storage);
-        }
+        auto &&item = mysql_optional_value(std::forward<T>(value));
+        return set_param_bind(param_binds,
+                              std::forward<decltype(item)>(item), text_storage,
+                              blob_storage, length_storage, null_storage);
       }
       else {
         bind_null_param(param, null_storage);
