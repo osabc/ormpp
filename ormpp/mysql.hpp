@@ -373,9 +373,9 @@ class mysql {
     if constexpr (is_optional_v<U>::value) {
       if (value.has_value()) {
         auto &&item = mysql_optional_value(std::forward<T>(value));
-        return set_param_bind(param_binds,
-                              std::forward<decltype(item)>(item), text_storage,
-                              blob_storage, length_storage, null_storage);
+        return set_param_bind(param_binds, std::forward<decltype(item)>(item),
+                              text_storage, blob_storage, length_storage,
+                              null_storage);
       }
       else {
         bind_null_param(param, null_storage);
