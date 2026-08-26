@@ -100,8 +100,18 @@ struct db_field_type_entity {
   ormpp::decimal<10, 2> amount;
   std::optional<ormpp::datetime> deleted_at;
   std::optional<ormpp::decimal<12, 4>> ratio;
+  std::optional<ormpp::date> renewal_date;
+  std::optional<ormpp::time> reminder_time;
 };
 REGISTER_AUTO_KEY(db_field_type_entity, id)
+
+struct text_result_entity {
+  int id;
+  std::string first_text;
+  std::string second_text;
+  std::optional<std::string> nullable_text;
+};
+REGISTER_AUTO_KEY(text_result_entity, id)
 
 inline db_field_type_entity make_db_field_type_entity(
     bool include_optional_values = false) {
@@ -114,10 +124,14 @@ inline db_field_type_entity make_db_field_type_entity(
   if (include_optional_values) {
     item.deleted_at = ormpp::datetime{"2026-08-24 00:00:00"};
     item.ratio = ormpp::decimal<12, 4>{"12.3456"};
+    item.renewal_date = ormpp::date{"2026-08-24"};
+    item.reminder_time = ormpp::time{"18:30:45"};
   }
   else {
     item.deleted_at = std::nullopt;
     item.ratio = std::nullopt;
+    item.renewal_date = std::nullopt;
+    item.reminder_time = std::nullopt;
   }
   return item;
 }
@@ -131,6 +145,8 @@ inline db_field_type_entity make_updated_db_field_type_entity(
   item.amount = "87654321.09";
   item.deleted_at = ormpp::datetime{"2026-08-25 00:00:00"};
   item.ratio = ormpp::decimal<12, 4>{"98.7654"};
+  item.renewal_date = ormpp::date{"2026-08-25"};
+  item.reminder_time = ormpp::time{"19:31:46"};
   return item;
 }
 
@@ -149,6 +165,14 @@ inline void check_db_field_type_entity(const db_field_type_entity &actual,
   if (expected.ratio.has_value()) {
     CHECK(actual.ratio->value == expected.ratio->value);
   }
+  CHECK(actual.renewal_date.has_value() == expected.renewal_date.has_value());
+  if (expected.renewal_date.has_value()) {
+    CHECK(actual.renewal_date->value == expected.renewal_date->value);
+  }
+  CHECK(actual.reminder_time.has_value() == expected.reminder_time.has_value());
+  if (expected.reminder_time.has_value()) {
+    CHECK(actual.reminder_time->value == expected.reminder_time->value);
+  }
 }
 
 template <typename DB>
@@ -163,16 +187,20 @@ inline void check_db_field_type_crud(DB &database) {
   check_db_field_type_entity(rows.front(), item);
 
   auto updated = make_updated_db_field_type_entity(rows.front());
-  CHECK(database.template update<db_field_type_entity>()
-            .set(col(&db_field_type_entity::birthday), updated.birthday)
-            .set(col(&db_field_type_entity::start_time), updated.start_time)
-            .set(col(&db_field_type_entity::created_at), updated.created_at)
-            .set(col(&db_field_type_entity::updated_at), updated.updated_at)
-            .set(col(&db_field_type_entity::amount), updated.amount)
-            .set(col(&db_field_type_entity::deleted_at), *updated.deleted_at)
-            .set(col(&db_field_type_entity::ratio), *updated.ratio)
-            .where(col(&db_field_type_entity::id) == updated.id)
-            .execute() == 1);
+  CHECK(
+      database.template update<db_field_type_entity>()
+          .set(col(&db_field_type_entity::birthday), updated.birthday)
+          .set(col(&db_field_type_entity::start_time), updated.start_time)
+          .set(col(&db_field_type_entity::created_at), updated.created_at)
+          .set(col(&db_field_type_entity::updated_at), updated.updated_at)
+          .set(col(&db_field_type_entity::amount), updated.amount)
+          .set(col(&db_field_type_entity::deleted_at), *updated.deleted_at)
+          .set(col(&db_field_type_entity::ratio), *updated.ratio)
+          .set(col(&db_field_type_entity::renewal_date), *updated.renewal_date)
+          .set(col(&db_field_type_entity::reminder_time),
+               *updated.reminder_time)
+          .where(col(&db_field_type_entity::id) == updated.id)
+          .execute() == 1);
 
   auto updated_rows =
       database.select(ormpp::all)
@@ -185,7 +213,11 @@ inline void check_db_field_type_crud(DB &database) {
                  col(&db_field_type_entity::amount) == updated.amount &&
                  col(&db_field_type_entity::deleted_at) ==
                      *updated.deleted_at &&
-                 col(&db_field_type_entity::ratio) == *updated.ratio)
+                 col(&db_field_type_entity::ratio) == *updated.ratio &&
+                 col(&db_field_type_entity::renewal_date) ==
+                     *updated.renewal_date &&
+                 col(&db_field_type_entity::reminder_time) ==
+                     *updated.reminder_time)
           .collect();
   REQUIRE(updated_rows.size() == 1);
   check_db_field_type_entity(updated_rows.front(), updated);
@@ -207,7 +239,9 @@ inline void check_db_field_type_optional_null(DB &database) {
   auto rows = database.select(ormpp::all)
                   .template from<db_field_type_entity>()
                   .where(col(&db_field_type_entity::deleted_at).null() &&
-                         col(&db_field_type_entity::ratio).null())
+                         col(&db_field_type_entity::ratio).null() &&
+                         col(&db_field_type_entity::renewal_date).null() &&
+                         col(&db_field_type_entity::reminder_time).null())
                   .collect();
   REQUIRE(rows.size() == 1);
   check_db_field_type_entity(rows.front(), item);
@@ -221,6 +255,58 @@ inline void check_db_field_type_optional_null(DB &database) {
             .empty());
 }
 
+template <DBType DbType, typename DB>
+inline void check_text_result_buffers(DB &database) {
+  REQUIRE(database.template create_table<text_result_entity>()
+              .primary_key(col(&text_result_entity::id))
+              .auto_increment(col(&text_result_entity::id))
+              .execute());
+  if constexpr (DbType == DBType::mysql) {
+    REQUIRE(
+        database.template alter_table<text_result_entity>()
+            .modify_column(col(&text_result_entity::first_text), "MEDIUMTEXT")
+            .execute());
+  }
+  CHECK(database.template remove<text_result_entity>().execute_all() >= 0);
+
+  const std::string long_text(65537, 'A');
+  CHECK(database.insert(text_result_entity{0, long_text, "row-1-col-2",
+                                           std::nullopt}) == 1);
+  CHECK(database.insert(text_result_entity{
+            0, "", "row-2-col-2", std::optional<std::string>{""}}) == 1);
+
+  auto text_rows = database.select(ormpp::all)
+                       .template from<text_result_entity>()
+                       .order_by(col(&text_result_entity::id))
+                       .collect();
+  REQUIRE(text_rows.size() == 2);
+  CHECK(text_rows[0].first_text == long_text);
+  CHECK(!text_rows[0].nullable_text.has_value());
+  CHECK(text_rows[1].first_text.empty());
+  REQUIRE(text_rows[1].nullable_text.has_value());
+  CHECK(text_rows[1].nullable_text->empty());
+
+  auto null_param_rows =
+      database.select(ormpp::all)
+          .template from<text_result_entity>()
+          .where(col(&text_result_entity::nullable_text).param())
+          .collect(std::optional<std::string>{});
+  CHECK(null_param_rows.empty());
+
+  using view_row = std::tuple<std::string_view, std::string_view>;
+  auto view_rows = database
+                       .select(col(&text_result_entity::first_text),
+                               col(&text_result_entity::second_text))
+                       .template from<text_result_entity>()
+                       .order_by(col(&text_result_entity::id))
+                       .template collect<view_row>();
+  REQUIRE(view_rows.size() == 2);
+  CHECK(std::get<0>(view_rows[0]) == long_text);
+  CHECK(std::get<1>(view_rows[0]) == "row-1-col-2");
+  CHECK(std::get<0>(view_rows[1]).empty());
+  CHECK(std::get<1>(view_rows[1]) == "row-2-col-2");
+}
+
 TEST_CASE("database field type mappings") {
   auto mysql_types = get_type_names<db_field_type_entity>(DBType::mysql);
   CHECK(mysql_types[1] == "DATE");
@@ -230,6 +316,8 @@ TEST_CASE("database field type mappings") {
   CHECK(mysql_types[5] == "DECIMAL(10,2)");
   CHECK(mysql_types[6] == "DATETIME");
   CHECK(mysql_types[7] == "DECIMAL(12,4)");
+  CHECK(mysql_types[8] == "DATE");
+  CHECK(mysql_types[9] == "TIME");
 
   auto pg_types = get_type_names<db_field_type_entity>(DBType::postgresql);
   CHECK(pg_types[1] == "date");
@@ -239,6 +327,8 @@ TEST_CASE("database field type mappings") {
   CHECK(pg_types[5] == "numeric(10,2)");
   CHECK(pg_types[6] == "timestamp");
   CHECK(pg_types[7] == "numeric(12,4)");
+  CHECK(pg_types[8] == "date");
+  CHECK(pg_types[9] == "time");
 
   auto sqlite_types = get_type_names<db_field_type_entity>(DBType::sqlite);
   for (std::size_t i = 1; i < sqlite_types.size(); ++i) {
@@ -263,17 +353,7 @@ TEST_CASE("sqlite database field types CRUD as text values") {
 TEST_CASE("sqlite string view results keep per-query storage") {
   dbng<sqlite> sqlite;
   REQUIRE(sqlite.connect(":memory:"));
-
-  using row_type = std::tuple<std::string_view, std::string_view>;
-  auto rows = sqlite.query_s<row_type>(
-      "SELECT 'row-1-col-1', 'row-1-col-2' "
-      "UNION ALL SELECT 'row-2-col-1', 'row-2-col-2'");
-
-  REQUIRE(rows.size() == 2);
-  CHECK(std::get<0>(rows[0]) == "row-1-col-1");
-  CHECK(std::get<1>(rows[0]) == "row-1-col-2");
-  CHECK(std::get<0>(rows[1]) == "row-2-col-1");
-  CHECK(std::get<1>(rows[1]) == "row-2-col-2");
+  check_text_result_buffers<DBType::sqlite>(sqlite);
 }
 
 TEST_CASE("mysql database field types CRUD as text values") {
@@ -299,6 +379,7 @@ TEST_CASE("postgresql database field types CRUD as text values") {
 
     check_db_field_type_crud(postgres);
     check_db_field_type_optional_null(postgres);
+    check_text_result_buffers<DBType::postgresql>(postgres);
   }
 #endif
 }
@@ -307,61 +388,7 @@ TEST_CASE("test mysql long string") {
 #ifdef ORMPP_ENABLE_MYSQL
   dbng<mysql> mysql;
   if (mysql.connect(ip, username, password, db)) {
-    auto vec = mysql.query_s<std::tuple<std::string>>(
-        "SELECT REPEAT('A', 65537) AS long_string");
-    CHECK(vec.size() == 1);
-    CHECK(std::get<0>(vec[0]).length() == 65537);
-
-    auto empty_vec =
-        mysql.query_s<std::tuple<std::string>>("SELECT '' AS empty_string");
-    CHECK(empty_vec.size() == 1);
-    CHECK(std::get<0>(empty_vec[0]).empty());
-
-    auto null_vec = mysql.query_s<std::tuple<std::optional<std::string>>>(
-        "SELECT ?", static_cast<const char *>(nullptr));
-    CHECK(null_vec.size() == 1);
-    CHECK(!std::get<0>(null_vec[0]).has_value());
-
-    using optional_db_text_tuple =
-        std::tuple<std::optional<ormpp::date>, std::optional<ormpp::time>,
-                   std::optional<ormpp::decimal<10, 2>>>;
-    auto wrapper_null_vec =
-        mysql.query_s<optional_db_text_tuple>("SELECT NULL, NULL, NULL");
-    CHECK(wrapper_null_vec.size() == 1);
-    CHECK(!std::get<0>(wrapper_null_vec[0]).has_value());
-    CHECK(!std::get<1>(wrapper_null_vec[0]).has_value());
-    CHECK(!std::get<2>(wrapper_null_vec[0]).has_value());
-
-    auto optional_wrapper_vec = mysql.query_s<optional_db_text_tuple>(
-        "SELECT DATE('2026-08-24'), TIME('16:30:45'), "
-        "CAST('12.34' AS DECIMAL(10,2))");
-    CHECK(optional_wrapper_vec.size() == 1);
-    REQUIRE(std::get<0>(optional_wrapper_vec[0]).has_value());
-    REQUIRE(std::get<1>(optional_wrapper_vec[0]).has_value());
-    REQUIRE(std::get<2>(optional_wrapper_vec[0]).has_value());
-    CHECK(std::get<0>(optional_wrapper_vec[0])->value == "2026-08-24");
-    CHECK(std::get<1>(optional_wrapper_vec[0])->value == "16:30:45");
-    CHECK(std::get<2>(optional_wrapper_vec[0])->value == "12.34");
-
-    auto wrapper_vec = mysql.query_s<std::tuple<std::string>>(
-        "SELECT ?", ormpp::date{"2026-08-24"});
-    CHECK(wrapper_vec.size() == 1);
-    CHECK(std::get<0>(wrapper_vec[0]) == "2026-08-24");
-
-    auto view_vec =
-        mysql.query_s<std::tuple<std::string_view>>("SELECT 'view-value'");
-    CHECK(view_vec.size() == 1);
-    CHECK(std::get<0>(view_vec[0]) == "view-value");
-
-    using view_row = std::tuple<std::string_view, std::string_view>;
-    auto multi_view_vec = mysql.query_s<view_row>(
-        "SELECT 'row-1-col-1', 'row-1-col-2' "
-        "UNION ALL SELECT 'row-2-col-1', 'row-2-col-2'");
-    REQUIRE(multi_view_vec.size() == 2);
-    CHECK(std::get<0>(multi_view_vec[0]) == "row-1-col-1");
-    CHECK(std::get<1>(multi_view_vec[0]) == "row-1-col-2");
-    CHECK(std::get<0>(multi_view_vec[1]) == "row-2-col-1");
-    CHECK(std::get<1>(multi_view_vec[1]) == "row-2-col-2");
+    check_text_result_buffers<DBType::mysql>(mysql);
   }
 #endif
 }
