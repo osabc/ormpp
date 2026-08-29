@@ -71,6 +71,9 @@ struct decimal {
   static_assert(Scale <= Precision,
                 "decimal scale must be less than or equal to precision");
 
+  static constexpr int precision = Precision;
+  static constexpr int scale = Scale;
+
   std::string value;
 
   decimal() = default;
@@ -80,6 +83,16 @@ struct decimal {
   const char *data() const noexcept { return value.data(); }
   std::size_t size() const noexcept { return value.size(); }
 };
+
+template <typename T>
+struct is_decimal_type : std::false_type {};
+
+template <int Precision, int Scale>
+struct is_decimal_type<decimal<Precision, Scale>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_decimal_type_v =
+    is_decimal_type<std::remove_cv_t<T>>::value;
 
 template <typename T>
 struct is_db_text_type : std::false_type {};
@@ -247,8 +260,9 @@ inline constexpr auto type_to_name(identity<timestamp>) noexcept {
   return "TEXT"sv;
 }
 template <int Precision, int Scale>
-inline auto type_to_name(identity<decimal<Precision, Scale>>) noexcept {
-  return "TEXT"sv;
+inline auto type_to_name(identity<decimal<Precision, Scale>>) {
+  return "DECIMAL(" + std::to_string(Precision) + "," + std::to_string(Scale) +
+         ")";
 }
 inline auto type_to_name(identity<std::string>) noexcept { return "TEXT"sv; }
 inline auto type_to_name(identity<std::string_view>) noexcept {

@@ -105,6 +105,14 @@ struct db_field_type_entity {
 };
 REGISTER_AUTO_KEY(db_field_type_entity, id)
 
+struct decimal_order_entity {
+  int id;
+  ormpp::decimal<10, 2> amount;
+};
+REGISTER_AUTO_KEY(decimal_order_entity, id)
+
+enum class mysql_optional_state : std::uint8_t { ready = 7 };
+
 struct text_result_entity {
   int id;
   std::string first_text;
@@ -331,9 +339,15 @@ TEST_CASE("database field type mappings") {
   CHECK(pg_types[9] == "time");
 
   auto sqlite_types = get_type_names<db_field_type_entity>(DBType::sqlite);
-  for (std::size_t i = 1; i < sqlite_types.size(); ++i) {
-    CHECK(sqlite_types[i] == "TEXT");
-  }
+  CHECK(sqlite_types[1] == "TEXT");
+  CHECK(sqlite_types[2] == "TEXT");
+  CHECK(sqlite_types[3] == "TEXT");
+  CHECK(sqlite_types[4] == "TEXT");
+  CHECK(sqlite_types[5] == "DECIMAL(10,2)");
+  CHECK(sqlite_types[6] == "TEXT");
+  CHECK(sqlite_types[7] == "DECIMAL(12,4)");
+  CHECK(sqlite_types[8] == "TEXT");
+  CHECK(sqlite_types[9] == "TEXT");
 
   auto optional_datetime_condition = col(&db_field_type_entity::deleted_at) >=
                                      ormpp::datetime{"2026-08-24 00:00:00"};
@@ -341,13 +355,38 @@ TEST_CASE("database field type mappings") {
   CHECK(optional_datetime_condition.need_quote);
 }
 
-TEST_CASE("sqlite database field types CRUD as text values") {
+TEST_CASE("sqlite database field types CRUD") {
   dbng<sqlite> sqlite;
   REQUIRE(sqlite.connect(":memory:"));
   REQUIRE(sqlite.create_datatable<db_field_type_entity>(ormpp_auto_key{"id"}));
 
   check_db_field_type_crud(sqlite);
   check_db_field_type_optional_null(sqlite);
+}
+
+TEST_CASE("sqlite decimal comparisons and ordering use numeric affinity") {
+  dbng<sqlite> sqlite;
+  REQUIRE(sqlite.connect(":memory:"));
+  REQUIRE(sqlite.create_datatable<decimal_order_entity>(ormpp_auto_key{"id"}));
+  CHECK(sqlite.insert(std::vector<decimal_order_entity>{
+            {0, {"2.00"}}, {0, {"10.00"}}, {0, {"-3.00"}}}) == 3);
+
+  auto greater = sqlite.select(ormpp::all)
+                     .from<decimal_order_entity>()
+                     .where(col(&decimal_order_entity::amount) >
+                            ormpp::decimal<10, 2>{"2.00"})
+                     .collect();
+  REQUIRE(greater.size() == 1);
+  CHECK(greater.front().amount.value == "10.00");
+
+  auto ordered = sqlite.select(ormpp::all)
+                     .from<decimal_order_entity>()
+                     .order_by(col(&decimal_order_entity::amount))
+                     .collect();
+  REQUIRE(ordered.size() == 3);
+  CHECK(ordered[0].amount.value == "-3.00");
+  CHECK(ordered[1].amount.value == "2.00");
+  CHECK(ordered[2].amount.value == "10.00");
 }
 
 TEST_CASE("sqlite string view results keep per-query storage") {
@@ -365,6 +404,36 @@ TEST_CASE("mysql database field types CRUD as text values") {
 
     check_db_field_type_crud(mysql);
     check_db_field_type_optional_null(mysql);
+  }
+#endif
+}
+
+TEST_CASE("mysql optional scalar result buffers survive null rows") {
+#ifdef ORMPP_ENABLE_MYSQL
+  dbng<mysql> mysql;
+  if (mysql.connect(ip, username, password, db)) {
+    REQUIRE(mysql.execute("drop table if exists optional_scalar_result"));
+    REQUIRE(mysql.execute(
+        "create table optional_scalar_result (id integer, scalar_value "
+        "integer null, enum_value integer null)"));
+    REQUIRE(mysql.execute(
+        "insert into optional_scalar_result values (1, null, null), "
+        "(2, 7, 7)"));
+
+    using result_type =
+        std::tuple<std::optional<int>, std::optional<mysql_optional_state>>;
+    auto rows = mysql.query_s<result_type>(
+        "select scalar_value, enum_value from optional_scalar_result order by "
+        "id");
+    REQUIRE(rows.size() == 2);
+    CHECK_FALSE(std::get<0>(rows[0]).has_value());
+    CHECK_FALSE(std::get<1>(rows[0]).has_value());
+    REQUIRE(std::get<0>(rows[1]).has_value());
+    REQUIRE(std::get<1>(rows[1]).has_value());
+    CHECK(*std::get<0>(rows[1]) == 7);
+    CHECK(*std::get<1>(rows[1]) == mysql_optional_state::ready);
+
+    CHECK(mysql.execute("drop table optional_scalar_result"));
   }
 #endif
 }

@@ -736,6 +736,31 @@ class sqlite {
           (size_t)sqlite3_column_bytes(stmt_, i));
       value = string_view_storage_.back();
     }
+    else if constexpr (is_decimal_type_v<U>) {
+      auto text = reinterpret_cast<const char *>(sqlite3_column_text(stmt_, i));
+      if (text == nullptr) {
+        value.value.clear();
+      }
+      else {
+        value.value.assign(text, (size_t)sqlite3_column_bytes(stmt_, i));
+        auto column_type = sqlite3_column_type(stmt_, i);
+        auto exponent_pos = value.value.find_first_of("eE");
+        if (column_type != SQLITE_TEXT && exponent_pos == std::string::npos) {
+          auto decimal_pos = value.value.find('.');
+          if constexpr (U::scale > 0) {
+            if (decimal_pos == std::string::npos) {
+              value.value.append(".").append(U::scale, '0');
+            }
+            else {
+              auto current_scale = value.value.size() - decimal_pos - 1;
+              if (current_scale < U::scale) {
+                value.value.append(U::scale - current_scale, '0');
+              }
+            }
+          }
+        }
+      }
+    }
     else if constexpr (is_db_text_type_v<U>) {
       auto text = reinterpret_cast<const char *>(sqlite3_column_text(stmt_, i));
       if (text == nullptr) {

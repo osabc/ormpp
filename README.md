@@ -1202,13 +1202,15 @@ ormpp 自动将 C++ 类型映射为对应数据库的 SQL 类型：
 | `ormpp::time` | TIME | time | TEXT |
 | `ormpp::datetime` | DATETIME | timestamp | TEXT |
 | `ormpp::timestamp` | TIMESTAMP | timestamp | TEXT |
-| `ormpp::decimal<P, S>` | DECIMAL(P,S) | numeric(P,S) | TEXT |
+| `ormpp::decimal<P, S>` | DECIMAL(P,S) | numeric(P,S) | DECIMAL(P,S) |
 | `enum` / `enum class` | INTEGER | integer | INTEGER |
 | `std::optional<T>` | 同 T 类型 | 同 T 类型 | 同 T 类型 |
 
 `ormpp::date`、`ormpp::time`、`ormpp::datetime`、`ormpp::timestamp`
 和 `ormpp::decimal<P, S>` 是轻量文本包装类型，ormpp 负责生成对应字段类型并按文本绑定/读取，
 不做日期格式、时间范围或 decimal 精度校验。
+SQLite 的 `DECIMAL(P,S)` 使用 NUMERIC affinity，使比较和排序遵循数值语义；SQLite 不强制
+`P`/`S`，超出其原生整数/浮点表示能力的高精度 decimal 也不会获得额外精度保证。
 MySQL 读取超出初始缓冲区的长文本或 blob 字段时，单列补取缓冲区默认上限为 64MB，可通过
 `mysql::set_max_mysql_result_buffer_size()` 调整；超过
 `mysql::mysql_result_buffer_size_hard_limit`（1GB）的设置会被截断到该上限。

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -469,8 +470,17 @@ class mysql {
                             error);
     }
     else if constexpr (std::is_enum_v<U>) {
+      using underlying_type = std::underlying_type_t<U>;
+      using buffer_type =
+          std::conditional_t<std::is_unsigned_v<underlying_type>, std::uint32_t,
+                             std::int32_t>;
       param_bind.buffer_type = MYSQL_TYPE_LONG;
-      param_bind.buffer = const_cast<void *>(static_cast<const void *>(&value));
+      param_bind.is_unsigned = std::is_unsigned_v<buffer_type>;
+      mp[i].assign(sizeof(buffer_type), 0);
+      param_bind.buffer = mp[i].data();
+      param_bind.buffer_length = mysql_buffer_length(mp[i].size());
+      param_bind.length = length;
+      param_bind.error = error;
     }
     else if constexpr (std::is_arithmetic_v<U>) {
       if constexpr (std::is_same_v<bool, U>) {
@@ -483,7 +493,11 @@ class mysql {
         param_bind.buffer_type =
             (enum_field_types)ormpp_mysql::type_to_id(identity<U>{});
       }
-      param_bind.buffer = const_cast<void *>(static_cast<const void *>(&value));
+      mp[i].assign(sizeof(U), 0);
+      param_bind.buffer = mp[i].data();
+      param_bind.buffer_length = mysql_buffer_length(mp[i].size());
+      param_bind.length = length;
+      param_bind.error = error;
     }
     else if constexpr (std::is_same_v<std::string, U> ||
                        std::is_same_v<std::string_view, U>) {
@@ -602,8 +616,17 @@ class mysql {
 
     if constexpr (is_optional_v<U>::value) {
       using value_type = typename U::value_type;
-      if constexpr (std::is_arithmetic_v<value_type>) {
-        value_type item;
+      if constexpr (std::is_enum_v<value_type>) {
+        using underlying_type = std::underlying_type_t<value_type>;
+        using buffer_type =
+            std::conditional_t<std::is_unsigned_v<underlying_type>,
+                               std::uint32_t, std::int32_t>;
+        buffer_type item{};
+        memcpy(&item, param_bind.buffer, sizeof(item));
+        value = static_cast<value_type>(item);
+      }
+      else if constexpr (std::is_arithmetic_v<value_type>) {
+        value_type item{};
         memcpy(&item, param_bind.buffer, sizeof(value_type));
         value = std::move(item);
       }
@@ -612,6 +635,18 @@ class mysql {
         value = std::move(item);
         return set_value(param_bind, *value, i, mp, false);
       }
+    }
+    else if constexpr (std::is_enum_v<U>) {
+      using underlying_type = std::underlying_type_t<U>;
+      using buffer_type =
+          std::conditional_t<std::is_unsigned_v<underlying_type>, std::uint32_t,
+                             std::int32_t>;
+      buffer_type item{};
+      memcpy(&item, param_bind.buffer, sizeof(item));
+      value = static_cast<U>(item);
+    }
+    else if constexpr (std::is_arithmetic_v<U>) {
+      memcpy(&value, param_bind.buffer, sizeof(U));
     }
     else if constexpr (std::is_same_v<std::string, U>) {
       auto text = get_column_text_value(param_bind, i, mp);
