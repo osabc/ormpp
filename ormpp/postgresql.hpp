@@ -8,8 +8,11 @@
 #include <libpq-fe.h>
 
 #include <climits>
+#include <deque>
+#include <optional>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include "iguana/detail/charconv.h"
 #include "query.hpp"
@@ -146,12 +149,9 @@ class postgresql {
         return 0;
 
       size_t index = 0;
-      std::vector<const char *> param_values_buf;
-      std::vector<std::vector<char>> param_values;
+      std::vector<std::optional<std::vector<char>>> param_values;
       (set_param_values(param_values, args), ...);
-      for (auto &item : param_values) {
-        param_values_buf.push_back(item.data());
-      }
+      auto param_values_buf = make_param_value_buffers(param_values);
       res_ = PQexecPrepared(con_, "", (int)param_values.size(),
                             param_values_buf.data(), NULL, NULL, 0);
     }
@@ -169,6 +169,7 @@ class postgresql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::ylt_refletable_v<T>, std::vector<T>> query_s(
       const std::string &str, Args &&...args) {
+    string_view_storage_.clear();
     std::string sql =
         contains_select(str) ? str : generate_query_sql<T>(db_type_v, str);
 #ifdef ORMPP_ENABLE_LOG
@@ -179,12 +180,9 @@ class postgresql {
         return {};
 
       size_t index = 0;
-      std::vector<const char *> param_values_buf;
-      std::vector<std::vector<char>> param_values;
+      std::vector<std::optional<std::vector<char>>> param_values;
       (set_param_values(param_values, args), ...);
-      for (auto &item : param_values) {
-        param_values_buf.push_back(item.data());
-      }
+      auto param_values_buf = make_param_value_buffers(param_values);
       res_ = PQexecPrepared(con_, "", (int)param_values.size(),
                             param_values_buf.data(), NULL, NULL, 0);
     }
@@ -215,6 +213,7 @@ class postgresql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::non_ylt_refletable_v<T>, std::vector<T>> query_s(
       const std::string &sql, Args &&...args) {
+    string_view_storage_.clear();
     static_assert(iguana::is_tuple<T>::value);
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
@@ -224,12 +223,9 @@ class postgresql {
         return {};
 
       size_t index = 0;
-      std::vector<const char *> param_values_buf;
-      std::vector<std::vector<char>> param_values;
+      std::vector<std::optional<std::vector<char>>> param_values;
       (set_param_values(param_values, args), ...);
-      for (auto &item : param_values) {
-        param_values_buf.push_back(item.data());
-      }
+      auto param_values_buf = make_param_value_buffers(param_values);
       res_ = PQexecPrepared(con_, "", (int)param_values.size(),
                             param_values_buf.data(), NULL, NULL, 0);
     }
@@ -304,6 +300,7 @@ class postgresql {
   template <typename T, typename... Args>
   std::enable_if_t<iguana::ylt_refletable_v<T>, std::vector<T>> query(
       Args &&...args) {
+    string_view_storage_.clear();
     std::string sql = generate_query_sql<T>(db_type_v, args...);
 #ifdef ORMPP_ENABLE_LOG
     std::cout << sql << std::endl;
@@ -332,6 +329,7 @@ class postgresql {
   template <typename T, typename Arg, typename... Args>
   std::enable_if_t<iguana::non_ylt_refletable_v<T>, std::vector<T>> query(
       const Arg &s, Args &&...args) {
+    string_view_storage_.clear();
     static_assert(iguana::is_tuple<T>::value);
     constexpr auto SIZE = std::tuple_size_v<T>;
     std::string sql = s;
@@ -564,7 +562,7 @@ class postgresql {
   template <auto... members, typename T, typename... Args>
   std::optional<uint64_t> stmt_execute(const T &t, OptType type,
                                        Args &&...args) {
-    std::vector<std::vector<char>> param_values;
+    std::vector<std::optional<std::vector<char>>> param_values;
     constexpr auto arr = indexs_of<members...>();
     if constexpr (sizeof...(members) > 0) {
       (set_param_values(
@@ -606,10 +604,7 @@ class postgresql {
       return std::nullopt;
     }
 
-    std::vector<const char *> param_values_buf;
-    for (auto &item : param_values) {
-      param_values_buf.push_back(item.data());
-    }
+    auto param_values_buf = make_param_value_buffers(param_values);
 
     res_ = PQexecPrepared(con_, "", (int)param_values.size(),
                           param_values_buf.data(), NULL, NULL, 0);
@@ -722,16 +717,27 @@ class postgresql {
     return get_insert_id ? res : (int)v.size();
   }
 
+  static std::vector<const char *> make_param_value_buffers(
+      std::vector<std::optional<std::vector<char>>> &param_values) {
+    std::vector<const char *> buffers;
+    buffers.reserve(param_values.size());
+    for (auto &item : param_values) {
+      buffers.push_back(
+          !item.has_value() ? nullptr : (item->empty() ? "" : item->data()));
+    }
+    return buffers;
+  }
+
   template <typename T>
-  void set_param_values(std::vector<std::vector<char>> &param_values,
-                        T &&value) {
+  void set_param_values(
+      std::vector<std::optional<std::vector<char>>> &param_values, T &&value) {
     using U = ylt::reflection::remove_cvref_t<T>;
     if constexpr (is_optional_v<U>::value) {
       if (value.has_value()) {
         return set_param_values(param_values, std::move(value.value()));
       }
       else {
-        param_values.push_back({});
+        param_values.push_back(std::nullopt);
       }
     }
     else if constexpr (std::is_enum_v<U> && !iguana::is_int64_v<U>) {
@@ -767,6 +773,13 @@ class postgresql {
       std::vector<char> temp = {};
       std::copy(value.data(), value.data() + value.size() + 1,
                 std::back_inserter(temp));
+      param_values.push_back(std::move(temp));
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      std::vector<char> temp = {};
+      std::copy(value.data(), value.data() + value.size(),
+                std::back_inserter(temp));
+      temp.push_back('\0');
       param_values.push_back(std::move(temp));
     }
     else if constexpr (iguana::c_array_v<U>) {
@@ -822,8 +835,13 @@ class postgresql {
       value = PQgetvalue(res_, row, i);
     }
     else if constexpr (std::is_same_v<std::string_view, U>) {
-      sv_ = PQgetvalue(res_, row, i);
-      value = sv_;
+      string_view_storage_.emplace_back(
+          PQgetvalue(res_, row, i),
+          static_cast<std::size_t>(PQgetlength(res_, row, i)));
+      value = string_view_storage_.back();
+    }
+    else if constexpr (is_db_text_type_v<U>) {
+      value.value = PQgetvalue(res_, row, i);
     }
     else if constexpr (iguana::array_v<U>) {
       auto p = PQgetvalue(res_, row, i);
@@ -867,7 +885,7 @@ class postgresql {
  private:
   PGconn *con_ = nullptr;
   PGresult *res_ = nullptr;
-  inline static std::string sv_;
+  std::deque<std::string> string_view_storage_;
   inline static std::string last_error_;
   inline static bool has_error_ = false;
   inline static bool transaction_ = true;
