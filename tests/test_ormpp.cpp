@@ -111,7 +111,13 @@ struct decimal_order_entity {
 };
 REGISTER_AUTO_KEY(decimal_order_entity, id)
 
-enum class mysql_optional_state : std::uint8_t { ready = 7 };
+enum class mysql_optional_state { ready = 7 };
+
+struct optional_scalar_result {
+  int id;
+  std::optional<int> scalar_value;
+  std::optional<mysql_optional_state> enum_value;
+};
 
 struct text_result_entity {
   int id;
@@ -349,6 +355,11 @@ TEST_CASE("database field type mappings") {
   CHECK(sqlite_types[8] == "TEXT");
   CHECK(sqlite_types[9] == "TEXT");
 
+  CHECK(get_type_names<optional_scalar_result>(DBType::mysql)[2] == "INTEGER");
+  CHECK(get_type_names<optional_scalar_result>(DBType::sqlite)[2] == "INTEGER");
+  CHECK(get_type_names<optional_scalar_result>(DBType::postgresql)[2] ==
+        "integer");
+
   auto optional_datetime_condition = col(&db_field_type_entity::deleted_at) >=
                                      ormpp::datetime{"2026-08-24 00:00:00"};
   CHECK(optional_datetime_condition.right == "2026-08-24 00:00:00");
@@ -412,28 +423,29 @@ TEST_CASE("mysql optional scalar result buffers survive null rows") {
 #ifdef ORMPP_ENABLE_MYSQL
   dbng<mysql> mysql;
   if (mysql.connect(ip, username, password, db)) {
-    REQUIRE(mysql.execute("drop table if exists optional_scalar_result"));
-    REQUIRE(mysql.execute(
-        "create table optional_scalar_result (id integer, scalar_value "
-        "integer null, enum_value integer null)"));
-    REQUIRE(mysql.execute(
-        "insert into optional_scalar_result values (1, null, null), "
-        "(2, 7, 7)"));
+    REQUIRE(mysql.create_table<optional_scalar_result>()
+                .primary_key(col(&optional_scalar_result::id))
+                .auto_increment(col(&optional_scalar_result::id))
+                .execute());
+    CHECK(mysql.remove<optional_scalar_result>().execute_all() >= 0);
+    CHECK(mysql.insert(optional_scalar_result{0, std::nullopt, std::nullopt}) ==
+          1);
+    CHECK(mysql.insert(
+              optional_scalar_result{0, 7, mysql_optional_state::ready}) == 1);
 
-    using result_type =
-        std::tuple<std::optional<int>, std::optional<mysql_optional_state>>;
-    auto rows = mysql.query_s<result_type>(
-        "select scalar_value, enum_value from optional_scalar_result order by "
-        "id");
+    auto rows = mysql.select(ormpp::all)
+                    .from<optional_scalar_result>()
+                    .order_by(col(&optional_scalar_result::id))
+                    .collect();
     REQUIRE(rows.size() == 2);
-    CHECK_FALSE(std::get<0>(rows[0]).has_value());
-    CHECK_FALSE(std::get<1>(rows[0]).has_value());
-    REQUIRE(std::get<0>(rows[1]).has_value());
-    REQUIRE(std::get<1>(rows[1]).has_value());
-    CHECK(*std::get<0>(rows[1]) == 7);
-    CHECK(*std::get<1>(rows[1]) == mysql_optional_state::ready);
+    CHECK_FALSE(rows[0].scalar_value.has_value());
+    CHECK_FALSE(rows[0].enum_value.has_value());
+    REQUIRE(rows[1].scalar_value.has_value());
+    REQUIRE(rows[1].enum_value.has_value());
+    CHECK(*rows[1].scalar_value == 7);
+    CHECK(*rows[1].enum_value == mysql_optional_state::ready);
 
-    CHECK(mysql.execute("drop table optional_scalar_result"));
+    CHECK(mysql.remove<optional_scalar_result>().execute_all() == 2);
   }
 #endif
 }

@@ -220,7 +220,12 @@ inline constexpr auto get_type_names(DBType type) {
         s = "INTEGER"sv;
       }
       else if constexpr (is_optional_v<U>::value) {
-        s = ormpp_mysql::type_to_name(identity<typename U::value_type>{});
+        if constexpr (std::is_enum_v<typename U::value_type>) {
+          s = "INTEGER"sv;
+        }
+        else {
+          s = ormpp_mysql::type_to_name(identity<typename U::value_type>{});
+        }
       }
 #ifdef ORMPP_WITH_CSTRING
       else if constexpr (std::is_same_v<CString, U>) {
@@ -236,7 +241,12 @@ inline constexpr auto get_type_names(DBType type) {
         s = "INTEGER"sv;
       }
       else if constexpr (is_optional_v<U>::value) {
-        s = ormpp_sqlite::type_to_name(identity<typename U::value_type>{});
+        if constexpr (std::is_enum_v<typename U::value_type>) {
+          s = "INTEGER"sv;
+        }
+        else {
+          s = ormpp_sqlite::type_to_name(identity<typename U::value_type>{});
+        }
       }
 #ifdef ORMPP_WITH_CSTRING
       else if constexpr (std::is_same_v<CString, U>) {
@@ -252,7 +262,13 @@ inline constexpr auto get_type_names(DBType type) {
         s = "integer"sv;
       }
       else if constexpr (is_optional_v<U>::value) {
-        s = ormpp_postgresql::type_to_name(identity<typename U::value_type>{});
+        if constexpr (std::is_enum_v<typename U::value_type>) {
+          s = "integer"sv;
+        }
+        else {
+          s = ormpp_postgresql::type_to_name(
+              identity<typename U::value_type>{});
+        }
       }
 #ifdef ORMPP_WITH_CSTRING
       else if constexpr (std::is_same_v<CString, U>) {
